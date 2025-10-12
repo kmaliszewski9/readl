@@ -1,0 +1,303 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Readl — Kokoro TTS</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --bg-elev: #121935;
+        --card: #0f1530;
+        --text: #e6e9f0;
+        --muted: #9aa3b2;
+        --accent: #6ea8fe;
+        --accent-2: #b384ff;
+        --border: #202849;
+        --success: #48d597;
+        --danger: #ff6b6b;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
+
+      body {
+        font-family: -apple-system, system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 10% -10%, rgba(110,168,254,0.12), transparent 60%),
+                    radial-gradient(1000px 500px at 110% 10%, rgba(179,132,255,0.12), transparent 60%),
+                    linear-gradient(180deg, var(--bg) 0%, #0b1126 100%);
+        margin: 0;
+      }
+
+      .app {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .title {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+
+      #status {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .screens {
+        display: block;
+      }
+
+      .screen { display: none; }
+      .screen.active { display: block; }
+
+      .card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0)), var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        backdrop-filter: blur(6px);
+        margin-bottom: 16px;
+      }
+
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .input-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 4px 0 12px;
+      }
+
+      .input-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 220px;
+        color: var(--text);
+        background: #0e1733;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 12px;
+        outline: none;
+        font-size: 14px;
+        line-height: 1.5;
+        resize: vertical;
+      }
+
+      input[type="text"], select, input[type="range"] {
+        color: var(--text);
+        background: #0e1733;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        outline: none;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        max-width: 100%;
+      }
+
+      .controls-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .controls-right {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .controls-right > * { min-width: 0; }
+      .controls-right label input[type="text"] { width: 160px; }
+
+      label { color: var(--muted); }
+
+      .btn {
+        appearance: none;
+        border: 1px solid transparent;
+        color: #0b1020;
+        background: linear-gradient(180deg, var(--accent), #4f86ff);
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.06s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        box-shadow: 0 6px 18px rgba(110,168,254,0.24);
+      }
+
+      .btn:hover { filter: brightness(1.05); }
+      .btn:active { transform: translateY(1px); }
+
+      .btn.btn-secondary {
+        background: linear-gradient(180deg, #e7ecf7, #cfd8ea);
+        color: #0b1020;
+        box-shadow: 0 6px 18px rgba(207,216,234,0.24);
+      }
+
+      audio { width: 100%; }
+
+      .preview {
+        border: 1px solid var(--border);
+        padding: 12px;
+        border-radius: 10px;
+        max-height: 360px;
+        overflow: auto;
+        background: #0c1430;
+      }
+
+      /* Modal */
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(7, 11, 28, 0.6);
+        backdrop-filter: blur(4px);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 12px;
+      }
+
+      .modal {
+        width: 560px;
+        max-width: 100%;
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0)), var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+      }
+
+      .modal-header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .modal-title { font-size: 16px; font-weight: 600; }
+
+      .modal-body { padding: 16px; }
+
+      .modal-footer {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="header">
+        <div class="title">Readl — Kokoro TTS</div>
+        <div id="status"></div>
+      </div>
+
+      <div class="screens">
+        <section id="screen-input" class="screen active">
+          <div class="card">
+            <h2>Provide input</h2>
+            <textarea id="inputText" placeholder="Type or paste text here…"></textarea>
+            <div class="input-actions">
+              <button id="previewBtn" class="btn">Preview</button>
+              <button id="openFileBtn" class="btn">Open File…</button>
+              <button id="openUrlModalBtn" class="btn">Add URL…</button>
+            </div>
+          </div>
+
+          <div class="card" id="savedAudiosCard">
+            <h2>Saved Audios</h2>
+            <div id="savedAudios" class="preview" style="max-height: 260px;"></div>
+          </div>
+        </section>
+
+        <section id="screen-preview" class="screen">
+          <div class="card controls-card">
+            <div class="controls-left">
+              <button id="backBtn" class="btn btn-secondary">Back</button>
+            </div>
+            <div class="controls-right">
+              <label>Voice: <input id="voice" type="text" value="af_heart" /></label>
+              <label>Lang:
+                <select id="lang">
+                  <option value="a" selected>English (US)</option>
+                  <option value="b">English (UK)</option>
+                  <option value="e">Spanish</option>
+                  <option value="f">French</option>
+                  <option value="i">Italian</option>
+                  <option value="p">Portuguese (BR)</option>
+                  <option value="z">Mandarin</option>
+                  <option value="h">Hindi</option>
+                  <option value="j">Japanese</option>
+                </select>
+              </label>
+              <label>Speed: <input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1" /></label>
+              <button id="playBtn" class="btn">Play</button>
+              <button id="stopBtn" class="btn btn-secondary">Stop</button>
+            </div>
+          </div>
+
+          <audio id="player" controls></audio>
+
+          <div class="card">
+            <h2>Preview</h2>
+            <div id="preview" class="preview"></div>
+          </div>
+        </section>
+      </div>
+
+      <textarea id="text" style="display:none;"></textarea>
+      
+      <!-- URL Modal -->
+      <div id="urlModalBackdrop" class="modal-backdrop" style="display:none;">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="urlModalTitle">
+          <div class="modal-header">
+            <div id="urlModalTitle" class="modal-title">Add URL</div>
+          </div>
+          <div class="modal-body">
+            <input id="modalUrlField" type="text" placeholder="https://example.com or example.com" style="width:100%;" />
+          </div>
+          <div class="modal-footer">
+            <button id="urlCancelBtn" class="btn btn-secondary">Cancel</button>
+            <button id="urlLoadBtn" class="btn">Load</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="node_modules/marked/marked.min.js"></script>
+    <script src="node_modules/dompurify/dist/purify.min.js"></script>
+    <script src="node_modules/@mozilla/readability/Readability.js"></script>
+    <script src="node_modules/@mozilla/readability/Readability-readerable.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+  </html>
+
+
