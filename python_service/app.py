@@ -2,6 +2,7 @@ import os
 import io
 import re
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -17,6 +18,13 @@ import numpy as np
 import soundfile as sf
 
 from kokoro import KPipeline
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 class SynthesisRequest(BaseModel):
@@ -108,12 +116,28 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Text is required")
 
     try:
-        pipeline = get_pipeline(req.lang_code or "a")
+        # Log the parameters being passed to the TTS model
+        voice = req.voice or "af_heart"
+        speed = req.speed or 1.0
+        lang_code = req.lang_code or "a"
+        split_pattern = req.split_pattern or r"\n+"
+        
+        logger.info("=" * 80)
+        logger.info("TTS Synthesis Request:")
+        logger.info(f"  Voice: {voice}")
+        logger.info(f"  Speed: {speed}")
+        logger.info(f"  Lang Code: {lang_code}")
+        logger.info(f"  Split Pattern: {split_pattern!r}")
+        logger.info(f"  Text Length: {len(text)} characters")
+        logger.info(f"  Full Text:\n{text}")
+        logger.info("=" * 80)
+        
+        pipeline = get_pipeline(lang_code)
         generator = pipeline(
             text,
-            voice=req.voice or "af_heart",
-            speed=req.speed or 1.0,
-            split_pattern=req.split_pattern or r"\n+",
+            voice=voice,
+            speed=speed,
+            split_pattern="\n+",
         )
 
         audio_segments: list[np.ndarray] = []
@@ -173,6 +197,12 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
             audio_total = audio_segments[0]
         else:
             audio_total = np.concatenate(audio_segments)
+        
+        # Log synthesis results
+        logger.info(f"Synthesis Complete:")
+        logger.info(f"  Generated {len(audio_segments)} segment(s)")
+        logger.info(f"  Total audio length: {len(audio_total)} samples ({len(audio_total) / SAMPLE_RATE:.2f}s)")
+        logger.info(f"  Segments with token timestamps: {sum(1 for s in segments_metadata if s.get('has_token_timestamps', False))}")
 
         # Persist to disk under shared audios/ directory (WAV + sidecar JSON metadata)
         saved_rel_path_str = None

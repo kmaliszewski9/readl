@@ -7,6 +7,7 @@ Electron app + Python FastAPI service to synthesize speech locally using Kokoro-
 - Audio is saved to disk; play from disk and manage recordings
 - Open local HTML/Markdown/TXT files
 - See a sanitized, formatted preview; text is auto-extracted for TTS. When input is HTML or a website URL, the app attempts to parse the page using a Reader Mode extractor (Mozilla Readability) to focus on the main article content. If Reader Mode fails, it falls back to sanitized full-page text.
+- When token-level alignment is available, the preview highlights each spoken word in sync with playback (requires a browser engine with the CSS Highlight API, e.g. Chromium 105+).
 
 ## Prerequisites
 
