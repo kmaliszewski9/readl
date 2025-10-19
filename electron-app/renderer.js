@@ -567,6 +567,15 @@ async function synthesizeAndPlay() {
   }
 }
 
+function clearAudioSource() {
+  if (!audioElement) return;
+  try { audioElement.pause(); } catch (_) {}
+  audioElement.removeAttribute('src');
+  try { audioElement.load(); } catch (_) {}
+  stopHighlightLoop();
+  clearHighlightDecorations();
+}
+
 function stopPlayback() {
   if (audioElement) {
     audioElement.pause();
@@ -719,6 +728,7 @@ async function handleOpenFile() {
     currentRawContent = result.content || '';
     currentRawContentType = getContentTypeForPath(lastOpenedFilePath);
     resetAlignmentState();
+  clearAudioSource();
     renderPreviewAndExtractText(lastOpenedFilePath, result.content || '');
     navigateToPreview();
   } catch (err) {
@@ -745,6 +755,7 @@ async function loadUrlAndRender(urlInput) {
     currentRawContent = res.body || '';
     currentRawContentType = contentType || null;
     resetAlignmentState();
+  clearAudioSource();
     if (contentType.includes('text/markdown')) {
       const html = window.marked.parse(res.body || '');
       renderSanitizedHtmlAndExtractText(html);
@@ -817,6 +828,7 @@ window.addEventListener('DOMContentLoaded', () => {
       currentRawContentType = 'text/plain';
       currentTitle = null;
       resetAlignmentState();
+      clearAudioSource();
       if (isLikelyUrl(content)) {
         navigateToPreview();
         loadUrlAndRender(content);
@@ -1012,7 +1024,7 @@ function getContentTypeForPath(filePath) {
   return 'text/plain';
 }
 
-function openSavedRecording(metadata, wavRelPath) {
+async function openSavedRecording(metadata, wavRelPath) {
   try {
     const previewEl = document.getElementById('preview');
     const textArea = document.getElementById('text');
@@ -1037,6 +1049,18 @@ function openSavedRecording(metadata, wavRelPath) {
     currentTitle = metadata.title || null;
 
     navigateToPreview();
+
+    clearAudioSource();
+    if (wavRelPath && audioElement) {
+      try {
+        const fileRes = await window.api.getSavedAudioFileUrl(wavRelPath);
+        if (fileRes && fileRes.ok && fileRes.url) {
+          audioElement.src = fileRes.url; // do not autoplay
+        }
+      } catch (_) {
+        // ignore
+      }
+    }
 
     captureAlignmentMetadata(metadata);
     logAlignment(metadata, wavRelPath);
