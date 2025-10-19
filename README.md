@@ -5,7 +5,7 @@ Electron app + Python FastAPI service to synthesize speech locally using Kokoro-
 - Paste plain text or a URL (auto-fetches website and shows preview)
 - Pick voice, language, and speed
 - Audio is saved to disk; play from disk and manage recordings
-- Open local HTML/Markdown/TXT files
+- Open local HTML/TXT files
 - See a sanitized, formatted preview; text is auto-extracted for TTS. When input is HTML or a website URL, the app attempts to parse the page using a Reader Mode extractor (Mozilla Readability) to focus on the main article content. If Reader Mode fails, it falls back to sanitized full-page text.
 - When token-level alignment is available, the preview highlights each spoken word in sync with playback (requires a browser engine with the CSS Highlight API, e.g. Chromium 105+).
 
@@ -57,32 +57,21 @@ pip install 'misaki[ja]'   # Japanese
 pip install 'misaki[zh]'   # Mandarin Chinese
 ```
 
-### API
+### WebSocket Synthesis API (synchronous segments)
 
-- POST `/synthesize` → returns JSON with saved file paths
-- JSON body:
-  - `text` (string, required)
-  - `voice` (string, default `af_heart`)
-  - `speed` (number, default `1.0`)
-  - `lang_code` (string, default `a`)
-  - `split_pattern` (string regex, default `\n+`)
-  - Optional metadata to recreate preview in the app:
-    - `preview_html` (string) — sanitized HTML preview
-    - `source_kind` (string) — one of `url` | `file` | `text`
-    - `source_url` (string) — source URL or file path
-    - `raw_content` (string) — original raw content
-    - `raw_content_type` (string) — e.g., `text/html`, `text/markdown`, `text/plain`
-    - `title` (string)
+The service exposes a WebSocket endpoint for non-blocking text-to-speech generation with per-segment notifications, cancellation, and clear failure reporting. Segment generation is synchronous (GPU-friendly) and events are emitted in order.
 
-Example request and response:
+- Endpoint: `ws://127.0.0.1:8000/ws/synthesize`
 
-```bash
-curl -X POST http://127.0.0.1:8000/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Hello world","voice":"af_heart","speed":1.0,"lang_code":"a"}'
-```
+Messages (JSON):
 
-Response (200):
+- start: `{ "type": "start", "request": { text, voice, speed, lang_code, split_pattern, preview_html, source_kind, source_url, raw_content, raw_content_type, title } }`
+- started: `{ "type": "started", "job_id": "...", "total_segments": 10 }` (total_segments optional; present when pre-count succeeds)
+- segment: `{ "type": "segment", "job_id": "...", "index": 0, "offset_seconds": 0.0, "duration_seconds": 1.23, "progress": 0.42 }` (progress 0..1 when total known)
+- complete: `{ "type": "complete", "job_id": "...", "ok": true, "wav_rel_path": "...", "align_rel_path": "...", "sample_rate": 24000, "duration_seconds": 12.34, "segment_count": 10, "progress": 1.0 }`
+- cancelled: `{ "type": "cancelled", "job_id": "...", "reason": "client_request|client_disconnected" }`
+- error: `{ "type": "error", "job_id": "...", "message": "..." }`
+- cancel (client→server): `{ "type": "cancel", "job_id": "..." }`
 
 ```json
 {
@@ -143,17 +132,16 @@ npm start
 Usage:
 
 - Paste text or a URL. If you paste/type a URL (e.g. `https://example.com` or `example.com`), the app fetches the page, renders a sanitized preview, and extracts plain text automatically into the textarea for TTS.
-- Or click “Open File…” to select an `.html`/`.htm`, `.md`/`.markdown`, or `.txt` file.
+- Or click “Open File…” to select an `.html`/`.htm` or `.txt` file.
 - Choose a voice (e.g. `af_heart`), select language (e.g. `a` for US English), adjust speed, and press Play.
 
 Notes:
 
 - HTML is sanitized at render-time (JavaScript is not executed) using DOMPurify.
-- Markdown is rendered with `marked` and then sanitized before preview.
-- Website URLs are fetched by the app (no CORS prompts). HTML/Markdown/plain text responses are supported; other content types fall back to HTML rendering. Bare domains are auto-prefixed with `https://`.
+- Website URLs are fetched by the app (no CORS prompts). HTML/plain text responses are supported; other content types fall back to HTML rendering. Bare domains are auto-prefixed with `https://`.
   - For HTML pages, the app first tries Reader Mode (Readability) extraction to isolate the main article and uses that for both preview and TTS text.
   
-The app calls the local Python service at `http://127.0.0.1:8000`. The service saves audio to disk and returns JSON pointing to the saved file; the app plays the file directly from disk.
+The app connects to the local Python service at `ws://127.0.0.1:8000/ws/synthesize`. The service saves audio to disk on completion; the app plays the file directly from disk and loads alignment from the sidecar NDJSON.
 
 ## Troubleshooting
 

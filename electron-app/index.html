@@ -229,6 +229,11 @@
         <div class="title">Readl — Kokoro TTS</div>
         <div id="status"></div>
       </div>
+      <div class="card" style="padding:8px 12px;">
+        <div id="progress" style="height:6px;background:var(--bg-elev);border-radius:6px;overflow:hidden;">
+          <div id="progressFill" style="height:100%;width:0%;background:var(--accent);transition:width .2s ease;"></div>
+        </div>
+      </div>
 
       <div class="screens">
         <section id="screen-input" class="screen active">
@@ -302,7 +307,6 @@
       </div>
     </div>
 
-    <script src="node_modules/marked/marked.min.js"></script>
     <script src="node_modules/dompurify/dist/purify.min.js"></script>
     <script src="node_modules/@mozilla/readability/Readability.js"></script>
     <script src="node_modules/@mozilla/readability/Readability-readerable.js"></script>

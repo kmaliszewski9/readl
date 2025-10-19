@@ -529,41 +529,130 @@ async function synthesizeAndPlay() {
   status.textContent = 'Synthesizing…';
   resetAlignmentState();
   try {
-    const res = await fetch(`${SERVICE_URL}/synthesize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws/synthesize');
+    let currentJobId = null;
+    let terminalSeen = false;
 
-    if (!res.ok) {
-      const msg = await res.text();
-      throw new Error(`${res.status} ${msg}`);
-    }
+    const closeWs = (code) => {
+      try { ws.close(code || 1000); } catch (_) {}
+    };
 
-    const data = await res.json();
-    if (!data || !data.ok || !data.wav_rel_path) {
-      throw new Error('Invalid synth response');
-    }
-    const fileRes = await window.api.getSavedAudioFileUrl(data.wav_rel_path);
-    if (!fileRes || !fileRes.ok || !fileRes.url) {
-      throw new Error('Could not resolve saved file URL');
-    }
-    audioElement.src = fileRes.url;
-    await audioElement.play();
-    status.textContent = 'Playing';
-    // Refresh library since a new file was saved
-    refreshSavedAudios();
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'start', request: payload }));
+    };
 
-    // Fetch alignment NDJSON and log token timestamps
-    if (!data.align_rel_path) throw new Error('Missing align_rel_path in response');
-    const metaRes = await window.api.getSavedAudioAlignment(data.align_rel_path);
-    if (metaRes && metaRes.ok && metaRes.metadata) {
-      logAlignment(metaRes.metadata, data.wav_rel_path);
-      captureAlignmentMetadata(metaRes.metadata);
+    ws.onmessage = async (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (!msg || typeof msg !== 'object') return;
+        if (!currentJobId && msg.job_id) currentJobId = msg.job_id;
+        switch (msg.type) {
+          case 'started':
+            status.textContent = 'Synthesizing…';
+            try {
+              const bar = document.getElementById('progressFill');
+              if (bar) bar.style.width = '0%';
+              const wrap = document.getElementById('progress');
+              if (wrap) {
+                const card = wrap.closest('.card');
+                if (card) card.style.display = '';
+              }
+            } catch (_) {}
+            break;
+          case 'segment':
+            if (typeof msg.progress === 'number') {
+              const pct = Math.round(msg.progress * 100);
+              status.textContent = `Synthesizing… ${pct}%`;
+              try {
+                const bar = document.getElementById('progressFill');
+                if (bar) bar.style.width = `${pct}%`;
+              } catch (_) {}
+            } else {
+              status.textContent = 'Synthesizing…';
+            }
+            break;
+          case 'complete': {
+            terminalSeen = true;
+            if (!msg.ok || !msg.wav_rel_path) throw new Error('Invalid complete message');
+            const fileRes = await window.api.getSavedAudioFileUrl(msg.wav_rel_path);
+            if (!fileRes || !fileRes.ok || !fileRes.url) throw new Error('Could not resolve saved file URL');
+            audioElement.src = fileRes.url;
+            await audioElement.play();
+            status.textContent = 'Playing';
+            try {
+              const bar = document.getElementById('progressFill');
+              if (bar) bar.style.width = '100%';
+              const wrap = document.getElementById('progress');
+              if (wrap) {
+                const card = wrap.closest('.card');
+                if (card) card.style.display = 'none';
+              }
+            } catch (_) {}
+            refreshSavedAudios();
+            if (msg.align_rel_path) {
+              const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
+              if (metaRes && metaRes.ok && metaRes.metadata) {
+                logAlignment(metaRes.metadata, msg.wav_rel_path);
+                captureAlignmentMetadata(metaRes.metadata);
+              }
+            }
+            closeWs(1000);
+            break;
+          }
+          case 'cancelled':
+            terminalSeen = true;
+            status.textContent = 'Cancelled';
+            try {
+              const bar = document.getElementById('progressFill');
+              if (bar) bar.style.width = '0%';
+              const wrap = document.getElementById('progress');
+              if (wrap) {
+                const card = wrap.closest('.card');
+                if (card) card.style.display = 'none';
+              }
+            } catch (_) {}
+            closeWs(1000);
+            break;
+          case 'error':
+            terminalSeen = true;
+            status.textContent = `Error: ${msg && msg.message ? msg.message : 'Unknown error'}`;
+            try {
+              const bar = document.getElementById('progressFill');
+              if (bar) bar.style.width = '0%';
+              const wrap = document.getElementById('progress');
+              if (wrap) {
+                const card = wrap.closest('.card');
+                if (card) card.style.display = 'none';
+              }
+            } catch (_) {}
+            closeWs(1011);
+            break;
+          default:
+            break;
+        }
+      } catch (e) {
+        console.error('WS message handling failed:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      if (!terminalSeen) {
+        status.textContent = 'Connection closed';
+      }
+    };
+
+    // Expose cancel for Stop button while WS active
+    const stopBtn = document.getElementById('stopBtn');
+    if (stopBtn) {
+      const stopHandler = () => {
+        try { ws.send(JSON.stringify({ type: 'cancel', job_id: currentJobId })); } catch (_) {}
+        closeWs(1000);
+      };
+      stopBtn.addEventListener('click', stopHandler, { once: true });
     }
   } catch (err) {
     console.error(err);
-    status.textContent = `Error: ${err.message}`;
+    status.textContent = `Error: ${err && err.message ? err.message : 'WebSocket failed'}`;
   }
 }
 
@@ -607,11 +696,7 @@ function renderPlainTextPreview(textContent) {
   renderSanitizedHtmlAndExtractText(pre);
 }
 
-function isMarkdownPath(filePath) {
-  if (!filePath) return false;
-  const lower = filePath.toLowerCase();
-  return lower.endsWith('.md') || lower.endsWith('.markdown');
-}
+// Markdown support removed
 
 function isHtmlPath(filePath) {
   if (!filePath) return false;
@@ -695,10 +780,7 @@ function renderPreviewAndExtractText(filePath, rawContent) {
 
   try {
     let html;
-    if (isMarkdownPath(filePath)) {
-      // Render markdown to HTML
-      html = window.marked.parse(rawContent);
-    } else if (isHtmlPath(filePath)) {
+    if (isHtmlPath(filePath)) {
       const baseUrl = filePath ? `file://${filePath}` : undefined;
       renderReaderOrSanitized(rawContent, baseUrl);
       return;
@@ -755,11 +837,8 @@ async function loadUrlAndRender(urlInput) {
     currentRawContent = res.body || '';
     currentRawContentType = contentType || null;
     resetAlignmentState();
-  clearAudioSource();
-    if (contentType.includes('text/markdown')) {
-      const html = window.marked.parse(res.body || '');
-      renderSanitizedHtmlAndExtractText(html);
-    } else if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+    clearAudioSource();
+    if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
       renderReaderOrSanitized(res.body || '', res.url || url);
     } else if (contentType.includes('text/plain')) {
       const pre = `<pre style="white-space:pre-wrap;">${(res.body || '')
@@ -1019,7 +1098,6 @@ refreshSavedAudios();
 function getContentTypeForPath(filePath) {
   if (!filePath) return 'text/plain';
   const lower = filePath.toLowerCase();
-  if (isMarkdownPath(lower)) return 'text/markdown';
   if (isHtmlPath(lower)) return 'text/html';
   return 'text/plain';
 }

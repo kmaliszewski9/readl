@@ -8,7 +8,7 @@ ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
     filters: [
-      { name: 'Documents', extensions: ['html', 'htm', 'md', 'markdown', 'txt'] }
+      { name: 'Documents', extensions: ['html', 'htm', 'txt'] }
     ]
   });
 
