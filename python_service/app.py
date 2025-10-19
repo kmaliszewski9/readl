@@ -204,14 +204,14 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
         logger.info(f"  Total audio length: {len(audio_total)} samples ({len(audio_total) / SAMPLE_RATE:.2f}s)")
         logger.info(f"  Segments with token timestamps: {sum(1 for s in segments_metadata if s.get('has_token_timestamps', False))}")
 
-        # Persist to disk under shared audios/ directory (WAV + sidecar JSON metadata)
+        # Persist to disk under shared audios/ directory (WAV + sidecar NDJSON alignment)
         saved_rel_path_str = None
-        meta_rel_path_str = None
+        align_rel_path_str = None
         try:
             save_path = build_save_path(req.voice or "af_heart", req.lang_code or "a", text)
             sf.write(str(save_path), audio_total, SAMPLE_RATE, format="WAV")
 
-            # Write sidecar JSON metadata next to WAV
+            # Write sidecar NDJSON alignment next to WAV
             audio_root = get_audio_root_dir()
             try:
                 rel_path = save_path.relative_to(audio_root)
@@ -223,7 +223,11 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
                 bool(s.get("has_token_timestamps")) for s in segments_metadata
             )
 
-            meta = {
+            # Build NDJSON file: header + one segment per line
+            align_path = save_path.with_suffix('.align.ndjson')
+            header = {
+                "type": "header",
+                "version": 1,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "sample_rate": SAMPLE_RATE,
                 "duration_seconds": float(len(audio_total) / float(SAMPLE_RATE)),
@@ -239,17 +243,18 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
                 "raw_content": req.raw_content,
                 "raw_content_type": req.raw_content_type,
                 "title": req.title,
-                # Per-segment metadata including token timestamps when available
-                "segments": segments_metadata,
                 "has_token_timestamps": has_any_token_ts_top_level,
             }
-            meta_path = save_path.with_suffix('.json')
-            with meta_path.open('w', encoding='utf-8') as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
+            with align_path.open('w', encoding='utf-8') as f:
+                f.write(json.dumps(header, ensure_ascii=False) + "\n")
+                for seg in segments_metadata:
+                    line = {"type": "segment"}
+                    line.update(seg)
+                    f.write(json.dumps(line, ensure_ascii=False) + "\n")
             try:
-                meta_rel_path_str = str(meta_path.relative_to(audio_root))
+                align_rel_path_str = str(align_path.relative_to(audio_root))
             except Exception:
-                meta_rel_path_str = str(meta_path)
+                align_rel_path_str = str(align_path)
         except Exception as save_exc:  # noqa: BLE001
             # Fail the request: we cannot direct client to a file that was not saved
             raise HTTPException(status_code=500, detail=f"Failed to save WAV/metadata to disk: {save_exc}") from save_exc
@@ -260,7 +265,7 @@ def synthesize(req: SynthesisRequest) -> JSONResponse:
                 "ok": True,
                 "root_dir": str(get_audio_root_dir()),
                 "wav_rel_path": saved_rel_path_str,
-                "meta_rel_path": meta_rel_path_str,
+                "align_rel_path": align_rel_path_str,
                 "sample_rate": SAMPLE_RATE,
                 "duration_seconds": float(len(audio_total) / float(SAMPLE_RATE)),
                 "voice": req.voice or "af_heart",

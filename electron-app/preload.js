@@ -18,8 +18,8 @@ contextBridge.exposeInMainWorld('api', {
   getSavedAudioFileUrl: async (relPath) => {
     return await ipcRenderer.invoke('audios-file-url', relPath);
   },
-  getSavedAudioMetadata: async (relPath) => {
-    return await ipcRenderer.invoke('audios-read-meta', relPath);
+  getSavedAudioAlignment: async (relPath) => {
+    return await ipcRenderer.invoke('audios-read-align', relPath);
   }
 });
 

@@ -111,13 +111,13 @@ ipcMain.handle('audios-delete', async (_event, relPath) => {
       fs.rmSync(target, { recursive: true, force: true });
     } else {
       fs.unlinkSync(target);
-      // Also remove sidecar metadata JSON if deleting a WAV file
+      // Also remove sidecar NDJSON alignment if deleting a WAV file
       if (/\.wav$/i.test(target)) {
-        const metaPath = target.replace(/\.wav$/i, '.json');
+        const alignPath = target.replace(/\.wav$/i, '.align.ndjson');
         try {
-          const metaStat = statSafe(metaPath);
-          if (metaStat && metaStat.isFile()) {
-            fs.unlinkSync(metaPath);
+          const stAlign = statSafe(alignPath);
+          if (stAlign && stAlign.isFile()) {
+            fs.unlinkSync(alignPath);
           }
         } catch (_) {}
       }
@@ -147,22 +147,36 @@ ipcMain.handle('audios-file-url', async (_event, relPath) => {
   }
 });
 
-// IPC: read metadata JSON (sidecar next to .wav)
-try { ipcMain.removeHandler('audios-read-meta'); } catch (e) {}
-ipcMain.handle('audios-read-meta', async (_event, relPath) => {
+// IPC: read NDJSON alignment sidecar
+try { ipcMain.removeHandler('audios-read-align'); } catch (e) {}
+ipcMain.handle('audios-read-align', async (_event, relPath) => {
   try {
     if (typeof relPath !== 'string' || !relPath) return { ok: false, error: 'Invalid path' };
     const root = getAudiosRoot();
-    const wavAbs = path.resolve(root, relPath);
-    if (!wavAbs.startsWith(path.resolve(root) + path.sep)) {
+    const alignAbs = path.resolve(root, relPath);
+    if (!alignAbs.startsWith(path.resolve(root) + path.sep)) {
       return { ok: false, error: 'Path outside audios root' };
     }
-    const metaAbs = wavAbs.replace(/\.wav$/i, '.json');
-    const st = statSafe(metaAbs);
-    if (!st || !st.isFile()) return { ok: false, error: 'Metadata not found' };
-    const raw = fs.readFileSync(metaAbs, 'utf8');
-    const json = JSON.parse(raw);
-    return { ok: true, metadata: json };
+    if (!/\.align\.ndjson$/i.test(alignAbs)) {
+      return { ok: false, error: 'Not an .align.ndjson path' };
+    }
+    const st = statSafe(alignAbs);
+    if (!st || !st.isFile()) return { ok: false, error: 'Alignment not found' };
+    const raw = fs.readFileSync(alignAbs, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (!lines.length) return { ok: false, error: 'Empty alignment file' };
+    const header = JSON.parse(lines[0]);
+    if (!header || header.type !== 'header') return { ok: false, error: 'Invalid alignment header' };
+    const segments = [];
+    for (let i = 1; i < lines.length; i += 1) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj && obj.type === 'segment') segments.push(obj);
+      } catch (_) { /* skip bad line */ }
+    }
+    const { type, version, ...rest } = header || {};
+    const metadata = { ...rest, segments };
+    return { ok: true, metadata };
   } catch (err) {
     return { ok: false, error: String(err && err.message ? err.message : err) };
   }

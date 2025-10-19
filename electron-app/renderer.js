@@ -554,8 +554,9 @@ async function synthesizeAndPlay() {
     // Refresh library since a new file was saved
     refreshSavedAudios();
 
-    // Fetch alignment metadata and log token timestamps
-    const metaRes = await window.api.getSavedAudioMetadata(data.wav_rel_path);
+    // Fetch alignment NDJSON and log token timestamps
+    if (!data.align_rel_path) throw new Error('Missing align_rel_path in response');
+    const metaRes = await window.api.getSavedAudioAlignment(data.align_rel_path);
     if (metaRes && metaRes.ok && metaRes.metadata) {
       logAlignment(metaRes.metadata, data.wav_rel_path);
       captureAlignmentMetadata(metaRes.metadata);
@@ -929,7 +930,8 @@ function renderSavedAudiosTree(container, items) {
         openSavedRecording(cachedMeta, file.relPath);
         return;
       }
-      const metaRes = await window.api.getSavedAudioMetadata(file.relPath);
+      const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
+      const metaRes = await window.api.getSavedAudioAlignment(alignRel);
       if (metaRes && metaRes.ok && metaRes.metadata) {
         cachedMeta = metaRes.metadata;
         openSavedRecording(metaRes.metadata, file.relPath);
@@ -949,7 +951,8 @@ function renderSavedAudiosTree(container, items) {
     // Resolve label from metadata
     (async () => {
       try {
-        const metaRes = await window.api.getSavedAudioMetadata(file.relPath);
+        const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
+        const metaRes = await window.api.getSavedAudioAlignment(alignRel);
         if (!metaRes || !metaRes.ok || !metaRes.metadata) return;
         cachedMeta = metaRes.metadata;
         const kind = (cachedMeta.source_kind || '').toLowerCase();

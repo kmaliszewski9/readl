@@ -29,7 +29,7 @@ export PYTORCH_ENABLE_MPS_FALLBACK=1
 Shared audio directory (optional, recommended):
 
 ```bash
-# Directory where synthesized WAVs and metadata JSON are stored
+# Directory where synthesized WAVs and alignment sidecars are stored
 export READL_AUDIO_DIR="/absolute/path/to/audios"
 ```
 
@@ -89,7 +89,7 @@ Response (200):
   "ok": true,
   "root_dir": "/path/to/audios",
   "wav_rel_path": "2025-10-02/182409399_af_heart_a_hello-world.wav",
-  "meta_rel_path": "2025-10-02/182409399_af_heart_a_hello-world.json",
+  "align_rel_path": "2025-10-02/182409399_af_heart_a_hello-world.align.ndjson",
   "sample_rate": 24000,
   "duration_seconds": 1.23,
   "voice": "af_heart",
@@ -99,40 +99,23 @@ Response (200):
 }
 ```
 
-#### Sidecar metadata (.json)
+#### Sidecar alignment (.align.ndjson)
 
-The service writes a sidecar JSON next to each WAV containing per-segment info and per-token timestamps when available.
+The service writes an NDJSON sidecar next to each WAV. It contains a header line followed by one line per segment.
 
-Example schema:
+Header line (first line):
 
 ```json
-{
-  "created_at": "2025-10-04T13:14:49",
-  "sample_rate": 24000,
-  "duration_seconds": 3.21,
-  "wav_rel_path": "2025-10-04/131449419_af_heart_a_hello-world.wav",
-  "voice": "af_heart",
-  "speed": 1.0,
-  "lang_code": "a",
-  "split_pattern": "\\n+",
-  "text": "Hello world",
-  "segments": [
-    {
-      "text_index": 0,
-      "offset_seconds": 0.0,
-      "duration_seconds": 1.23,
-      "has_token_timestamps": true,
-      "tokens": [
-        { "index": 0, "text": "Hello", "start_ts": 0.12, "end_ts": 0.48 },
-        { "index": 1, "text": "world", "start_ts": 0.62, "end_ts": 1.18 }
-      ]
-    }
-  ],
-  "has_token_timestamps": true
-}
+{"type":"header","version":1,"created_at":"2025-10-04T13:14:49","sample_rate":24000,"duration_seconds":3.21,"wav_rel_path":"2025-10-04/131449419_af_heart_a_hello-world.wav","voice":"af_heart","speed":1.0,"lang_code":"a","split_pattern":"\\n+","text":"Hello world","preview_html":"<p>Hello…</p>","source_kind":"url","source_url":"https://example.com","raw_content":"…","raw_content_type":"text/html","title":"Example","has_token_timestamps":true}
 ```
 
-- Token timestamps are in seconds and are relative to their segment; use `offset_seconds + start_ts` to compute absolute times within the full WAV.
+Segment line (subsequent lines):
+
+```json
+{"type":"segment","text_index":0,"offset_seconds":0.0,"duration_seconds":1.23,"has_token_timestamps":true,"tokens":[{"index":0,"text":"Hello","start_ts":0.12,"end_ts":0.48},{"index":1,"text":"world","start_ts":0.62,"end_ts":1.18}]}
+```
+
+- Token timestamps are in seconds and typically segment-relative; the app computes absolute times using `offset_seconds + start_ts`.
 - When timestamps are not available, `has_token_timestamps` is false; tokens may still be present without `start_ts`/`end_ts`.
 
 Language codes (Kokoro):
