@@ -216,6 +216,7 @@ function createWindow() {
     }
   });
 
+  win.maximize();
   win.loadFile(path.join(__dirname, 'index.html'));
 }
 
@@ -230,5 +231,3 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-
-

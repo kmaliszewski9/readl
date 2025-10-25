@@ -17,6 +17,8 @@
         --border: #202849;
         --success: #48d597;
         --danger: #ff6b6b;
+        --focus-ring: 2px solid #8bb9ff;
+        --focus-shadow: 0 0 0 3px rgba(110,168,254,0.28);
       }
 
       *, *::before, *::after { box-sizing: border-box; }
@@ -28,39 +30,139 @@
                     radial-gradient(1000px 500px at 110% 10%, rgba(179,132,255,0.12), transparent 60%),
                     linear-gradient(180deg, var(--bg) 0%, #0b1126 100%);
         margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .app {
         max-width: 1000px;
         margin: 0 auto;
         padding: 24px;
+        height: 100vh;
+        min-height: 100vh;
+        max-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 24px;
       }
 
       .header {
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .app.preview-mode .header {
+        display: flex;
+      }
+
+      .header-bar {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        margin-bottom: 16px;
+        flex-wrap: wrap;
       }
 
-      .title {
-        font-size: 18px;
-        font-weight: 600;
-        letter-spacing: 0.2px;
+      .header-left,
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .header-center {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        flex: 1;
+        min-width: 0;
+        text-align: center;
+      }
+
+      .header-back {
+        display: none;
+      }
+
+      .app.preview-mode .header-back {
+        display: inline-flex;
       }
 
       #status {
         color: var(--muted);
         font-size: 14px;
+        min-height: 18px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .progress-shell {
+        height: 6px;
+        background: var(--bg-elev);
+        border-radius: 999px;
+        overflow: hidden;
+        width: 100%;
+        display: none;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+      }
+
+      #progress {
+        width: 100%;
+        height: 100%;
+      }
+
+      #progressFill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(180deg, var(--accent), #4f86ff);
+        transition: width 0.2s ease;
+      }
+
+      .main {
+        min-height: 0;
       }
 
       .screens {
-        display: block;
+        height: 100%;
       }
 
-      .screen { display: none; }
+      .screen {
+        display: none;
+        height: 100%;
+        overflow-y: auto;
+        padding-bottom: 16px;
+        min-height: 0;
+      }
+
       .screen.active { display: block; }
+
+      #screen-input.active {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 0;
+      }
+
+      #savedAudiosCard {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      #savedAudios {
+        flex: 1 1 auto;
+        overflow: auto;
+      }
+
+      #screen-preview.active {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
 
       .card {
         background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0)), var(--card);
@@ -78,18 +180,26 @@
         font-weight: 600;
       }
 
-      .input-actions {
+      .preview-card {
+        margin-bottom: 0;
+        flex: 1;
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin: 4px 0 12px;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
       }
 
-      .input-group {
+      .preview-card-body {
+        flex: 1;
+        min-height: 0;
         display: flex;
-        gap: 8px;
+      }
+
+      .preview-card-header {
+        display: flex;
         align-items: center;
-        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 12px;
       }
 
       textarea {
@@ -120,24 +230,6 @@
         max-width: 100%;
       }
 
-      .controls-card {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-
-      .controls-right {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-
-      .controls-right > * { min-width: 0; }
-      .controls-right label input[type="text"] { width: 160px; }
-
       label { color: var(--muted); }
 
       .btn {
@@ -151,10 +243,43 @@
         cursor: pointer;
         transition: transform 0.06s ease, box-shadow 0.2s ease, filter 0.2s ease;
         box-shadow: 0 6px 18px rgba(110,168,254,0.24);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
       }
 
       .btn:hover { filter: brightness(1.05); }
       .btn:active { transform: translateY(1px); }
+
+      /* Consistent modern focus rings */
+      .btn:focus { outline: none; }
+      .btn:focus-visible {
+        outline: var(--focus-ring);
+        outline-offset: 2px;
+        box-shadow: var(--focus-shadow);
+      }
+
+      input[type="text"], select, input[type="range"], textarea, button { outline: none; }
+      input[type="text"]:focus-visible,
+      select:focus-visible,
+      input[type="range"]:focus-visible,
+      textarea:focus-visible,
+      button:focus-visible {
+        outline: var(--focus-ring);
+        outline-offset: 2px;
+        box-shadow: var(--focus-shadow);
+      }
+
+      /* Reduced motion: respect user preference */
+      html { scroll-behavior: smooth; }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+      }
+
+      /* Button icons */
+      .btn svg { width: 16px; height: 16px; display: inline-block; }
+      .btn svg path { fill: currentColor; }
 
       .btn.btn-secondary {
         background: linear-gradient(180deg, #e7ecf7, #cfd8ea);
@@ -162,16 +287,137 @@
         box-shadow: 0 6px 18px rgba(207,216,234,0.24);
       }
 
-      audio { width: 100%; }
+      .btn.btn-danger {
+        background: linear-gradient(180deg, var(--danger), #ff5252);
+        color: #fff;
+        box-shadow: 0 6px 18px rgba(255, 107, 107, 0.28);
+      }
+
+      .input-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 4px 0 12px;
+      }
 
       .preview {
         border: 1px solid var(--border);
         padding: 12px;
         border-radius: 10px;
-        max-height: 360px;
-        overflow: auto;
         background: #0c1430;
+        overflow: auto;
         position: relative;
+      }
+
+      .preview-content {
+        flex: 1;
+        min-height: 320px;
+      }
+
+      audio { width: 100%; }
+
+      .player-bar {
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0)), var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        backdrop-filter: blur(6px);
+        min-height: 0;
+        flex-shrink: 0;
+      }
+
+      .app:not(.preview-mode) .player-bar {
+        display: none;
+      }
+
+      .player-bar.card { margin-bottom: 0; }
+
+      .app:not(.preview-mode) #screen-preview {
+        display: none !important;
+      }
+
+      .drawer-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(7, 11, 28, 0.6);
+        backdrop-filter: blur(4px);
+        display: none;
+        z-index: 900;
+      }
+
+      .drawer-backdrop.active {
+        display: block;
+      }
+
+      .options-drawer {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        right: 0;
+        width: min(340px, 90vw);
+        padding: 24px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0)), var(--bg-elev);
+        border-left: 1px solid var(--border);
+        box-shadow: -20px 0 60px rgba(0,0,0,0.45);
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        z-index: 1000;
+      }
+
+      .options-drawer.open {
+        transform: translateX(0);
+      }
+
+      .options-drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .options-drawer-title {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .options-drawer-body {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .drawer-field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .drawer-field-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .drawer-field-header span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .options-footer {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      .options-footer .btn {
+        min-width: 100px;
       }
 
       /* Modal */
@@ -225,71 +471,127 @@
   </head>
   <body>
     <div class="app">
-      <div class="header">
-        <div class="title">Readl — Kokoro TTS</div>
-        <div id="status"></div>
-      </div>
-      <div class="card" style="padding:8px 12px;">
-        <div id="progress" style="height:6px;background:var(--bg-elev);border-radius:6px;overflow:hidden;">
-          <div id="progressFill" style="height:100%;width:0%;background:var(--accent);transition:width .2s ease;"></div>
+      <header class="header">
+        <div class="header-bar">
+          <div class="header-left">
+            <button id="backBtn" class="btn btn-secondary header-back" aria-label="Back to input">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M14.7 5.3a1 1 0 0 1 0 1.4L10.41 11H20a1 1 0 1 1 0 2h-9.59l4.3 4.3a1 1 0 0 1-1.42 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.42 0z"/></svg>
+              Back
+            </button>
+          </div>
+          <div class="header-center">
+            <div id="status"></div>
+          </div>
+          <div class="header-right">
+            <button id="optionsToggle" class="btn btn-secondary" aria-label="Open options">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 7.5A2.5 2.5 0 1 1 4.5 5 2.5 2.5 0 0 1 7 7.5zm0 0h14M7 19.5A2.5 2.5 0 1 1 4.5 17 2.5 2.5 0 0 1 7 19.5zm0 0h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+              Options
+            </button>
+            <button id="generateBtn" class="btn" aria-label="Generate audio">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              Generate
+            </button>
+          </div>
         </div>
-      </div>
+        <div id="progressShell" class="progress-shell">
+          <div id="progress">
+            <div id="progressFill"></div>
+          </div>
+        </div>
+      </header>
 
-      <div class="screens">
-        <section id="screen-input" class="screen active">
-          <div class="card">
-            <h2>Provide input</h2>
-            <textarea id="inputText" placeholder="Type or paste text here…"></textarea>
-            <div class="input-actions">
-              <button id="previewBtn" class="btn">Preview</button>
-              <button id="openFileBtn" class="btn">Open File…</button>
-              <button id="openUrlModalBtn" class="btn">Add URL…</button>
+      <main class="main">
+        <div class="screens">
+          <section id="screen-input" class="screen active">
+            <div class="card">
+              <h2>Compose</h2>
+              <textarea id="inputText" placeholder="Type, paste, or drop text/URL here…"></textarea>
+              <div class="input-actions">
+                <button id="previewBtn" class="btn" aria-label="Show preview">
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5c5 0 9 5 9 7s-4 7-9 7-9-5-9-7 4-7 9-7zm0 3a4 4 0 1 0 4 4 4 4 0 0 0-4-4z"/></svg>
+                  Preview
+                </button>
+                <button id="openFileBtn" class="btn" aria-label="Open a file">
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h8l4 4v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm8 0v4h4"/></svg>
+                  Open File…
+                </button>
+                <button id="openUrlModalBtn" class="btn" aria-label="Add a URL">
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 1 0-7l2-2a5 5 0 0 1 7 7l-1 1" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><path d="M14 11a5 5 0 0 1 0 7l-2 2a5 5 0 1 1-7-7l1-1" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+                  Add URL…
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div class="card" id="savedAudiosCard">
-            <h2>Saved Audios</h2>
-            <div id="savedAudios" class="preview" style="max-height: 260px;"></div>
-          </div>
-        </section>
-
-        <section id="screen-preview" class="screen">
-          <div class="card controls-card">
-            <div class="controls-left">
-              <button id="backBtn" class="btn btn-secondary">Back</button>
+            <div class="card" id="savedAudiosCard">
+              <h2>Library</h2>
+              <div id="savedAudios" class="preview"></div>
             </div>
-            <div class="controls-right">
-              <label>Voice: <input id="voice" type="text" value="af_heart" /></label>
-              <label>Lang:
-                <select id="lang">
-                  <option value="a" selected>English (US)</option>
-                  <option value="b">English (UK)</option>
-                  <option value="e">Spanish</option>
-                  <option value="f">French</option>
-                  <option value="i">Italian</option>
-                  <option value="p">Portuguese (BR)</option>
-                  <option value="z">Mandarin</option>
-                  <option value="h">Hindi</option>
-                  <option value="j">Japanese</option>
-                </select>
-              </label>
-              <label>Speed: <input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1" /></label>
-              <button id="playBtn" class="btn">Play</button>
-              <button id="stopBtn" class="btn btn-secondary">Stop</button>
+          </section>
+
+          <section id="screen-preview" class="screen">
+            <div class="card preview-card">
+              <div class="preview-card-header">
+                <h2>Preview</h2>
+              </div>
+              <div class="preview-card-body">
+                <div id="preview" class="preview preview-content"></div>
+              </div>
             </div>
-          </div>
+          </section>
+        </div>
+      </main>
 
-          <audio id="player" controls></audio>
-
-          <div class="card">
-            <h2>Preview</h2>
-            <div id="preview" class="preview"></div>
-          </div>
-        </section>
+      <div class="player-bar card">
+        <audio id="player" controls></audio>
       </div>
 
       <textarea id="text" style="display:none;"></textarea>
-      
+
+      <aside id="optionsDrawer" class="options-drawer" aria-labelledby="optionsDrawerTitle" aria-hidden="true">
+        <div class="options-drawer-header">
+          <h2 id="optionsDrawerTitle" class="options-drawer-title">Options</h2>
+          <button id="optionsClose" class="btn btn-secondary" aria-label="Close options">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6l-12 12" stroke="currentColor" stroke-width="2"/></svg>
+            Close
+          </button>
+        </div>
+        <div class="options-drawer-body">
+          <div class="drawer-field">
+            <label for="voice">Voice</label>
+            <input id="voice" type="text" value="af_heart" />
+          </div>
+          <div class="drawer-field">
+            <label for="lang">Language</label>
+            <select id="lang">
+              <option value="a" selected>English (US)</option>
+              <option value="b">English (UK)</option>
+              <option value="e">Spanish</option>
+              <option value="f">French</option>
+              <option value="i">Italian</option>
+              <option value="p">Portuguese (BR)</option>
+              <option value="z">Mandarin</option>
+              <option value="h">Hindi</option>
+              <option value="j">Japanese</option>
+            </select>
+          </div>
+          <div class="drawer-field">
+            <div class="drawer-field-header">
+              <label for="speed">Speed</label>
+              <span id="speedValue">1.0x</span>
+            </div>
+            <input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1" />
+          </div>
+        </div>
+        <div class="options-footer">
+          <button id="optionsDone" class="btn btn-secondary" aria-label="Save options">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+            Done
+          </button>
+        </div>
+      </aside>
+
+      <div id="optionsBackdrop" class="drawer-backdrop"></div>
+
       <!-- URL Modal -->
       <div id="urlModalBackdrop" class="modal-backdrop" style="display:none;">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="urlModalTitle">
@@ -300,8 +602,14 @@
             <input id="modalUrlField" type="text" placeholder="https://example.com or example.com" style="width:100%;" />
           </div>
           <div class="modal-footer">
-            <button id="urlCancelBtn" class="btn btn-secondary">Cancel</button>
-            <button id="urlLoadBtn" class="btn">Load</button>
+            <button id="urlCancelBtn" class="btn btn-secondary" aria-label="Cancel adding URL">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6l-12 12" stroke="currentColor" stroke-width="2"/></svg>
+              Cancel
+            </button>
+            <button id="urlLoadBtn" class="btn" aria-label="Load URL">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+              Load
+            </button>
           </div>
         </div>
       </div>

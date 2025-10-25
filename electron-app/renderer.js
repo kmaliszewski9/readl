@@ -18,9 +18,28 @@ let highlightRafHandle = null;
 let lastHighlightedTokenIndex = -1;
 let pendingRangeRebuildId = null;
 let timedTokenIndices = [];
+let generateBtn = null;
+let optionsToggleBtn = null;
+let optionsCloseBtn = null;
+let optionsDoneBtn = null;
+let optionsDrawer = null;
+let optionsBackdrop = null;
+let speedValueLabel = null;
+let isGenerating = false;
+let activeSynthesis = null;
+let optionsDrawerOpen = false;
+let currentOptions = {
+  voice: 'af_heart',
+  lang: 'a',
+  speed: 1
+};
+let isCancelling = false;
+// Gate status updates from stop button when we're cancelling synthesis mid-flight.
+let suppressNextStopStatus = false;
 const TOKEN_HIGHLIGHT_EPSILON = 0.03;
 const RELATIVE_TIME_FUZZ = 0.05;
 const HIGHLIGHT_API_AVAILABLE = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
+const OPTIONS_STORAGE_KEY = 'readl-options-v1';
 
 function logAlignment(metadata, wavRelPath) {
   try {
@@ -486,11 +505,210 @@ function startHighlightLoop() {
   highlightRafHandle = requestAnimationFrame(highlightAnimationStep);
 }
 
+function getProgressUiElements() {
+  const shell = document.getElementById('progressShell');
+  return {
+    bar: document.getElementById('progressFill'),
+    shell
+  };
+}
+
+function clampProgressPercent(pct) {
+  if (!Number.isFinite(pct)) return 0;
+  if (pct < 0) return 0;
+  if (pct > 100) return 100;
+  return pct;
+}
+
+function showProgressUi(initialPct) {
+  const { bar, shell } = getProgressUiElements();
+  const pct = clampProgressPercent(initialPct);
+  if (bar) bar.style.width = `${pct}%`;
+  if (shell) shell.style.display = 'block';
+}
+
+function updateProgressUi(pct) {
+  const { bar } = getProgressUiElements();
+  if (bar) bar.style.width = `${clampProgressPercent(pct)}%`;
+}
+
+function hideProgressUi({ resetWidth = true } = {}) {
+  const { bar, shell } = getProgressUiElements();
+  if (resetWidth && bar) bar.style.width = '0%';
+  if (shell) shell.style.display = 'none';
+}
+
 
 function showScreen(screenId) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   const el = document.getElementById(screenId);
   if (el) el.classList.add('active');
+  updateShellForScreen(screenId);
+}
+
+function isPreviewScreenActive() {
+  const preview = document.getElementById('screen-preview');
+  return !!(preview && preview.classList.contains('active'));
+}
+
+function updateGenerateAvailability(forcePreview) {
+  if (!generateBtn) return;
+  const onPreview = typeof forcePreview === 'boolean' ? forcePreview : isPreviewScreenActive();
+  if (isCancelling) {
+    generateBtn.disabled = true;
+    return;
+  }
+  if (isGenerating) {
+    generateBtn.disabled = false;
+  } else {
+    generateBtn.disabled = !onPreview;
+  }
+}
+
+function updateShellForScreen(screenId) {
+  const appEl = document.querySelector('.app');
+  const onPreview = screenId === 'screen-preview';
+  if (appEl) appEl.classList.toggle('preview-mode', onPreview);
+  updateGenerateAvailability(onPreview);
+}
+
+function setGeneratingState(active) {
+  isGenerating = !!active;
+  if (!isGenerating) {
+    isCancelling = false;
+  }
+  if (!generateBtn) return;
+  if (isGenerating) {
+    generateBtn.textContent = 'Cancel';
+    generateBtn.classList.add('btn-danger');
+  } else {
+    generateBtn.textContent = 'Generate';
+    generateBtn.classList.remove('btn-danger');
+  }
+  updateGenerateAvailability();
+}
+
+function clampSpeed(value) {
+  if (!Number.isFinite(value)) return currentOptions.speed;
+  if (value < 0.5) return 0.5;
+  if (value > 1.5) return 1.5;
+  return value;
+}
+
+function formatSpeedValue(value) {
+  if (!Number.isFinite(value)) return '';
+  const fixed = value.toFixed(2);
+  let trimmed = fixed.replace(/0+$/, '');
+  if (trimmed.endsWith('.')) {
+    trimmed += '0';
+  }
+  if (!trimmed.includes('.')) {
+    trimmed += '.0';
+  }
+  return `${trimmed}x`;
+}
+
+function setSpeedValueDisplay(value) {
+  if (speedValueLabel) {
+    speedValueLabel.textContent = formatSpeedValue(value);
+  }
+}
+
+function loadOptionsFromStorage() {
+  try {
+    const raw = localStorage.getItem(OPTIONS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const next = { ...currentOptions };
+    if (typeof parsed.voice === 'string') next.voice = parsed.voice;
+    if (typeof parsed.lang === 'string') next.lang = parsed.lang;
+    const speed = parseFloat(parsed.speed);
+    if (Number.isFinite(speed)) next.speed = clampSpeed(speed);
+    return next;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function persistOptions(options) {
+  try {
+    localStorage.setItem(OPTIONS_STORAGE_KEY, JSON.stringify(options));
+  } catch (_err) {
+    // ignore storage errors
+  }
+}
+
+function applyOptionsToInputs(options) {
+  const voiceInput = document.getElementById('voice');
+  const langInput = document.getElementById('lang');
+  const speedInput = document.getElementById('speed');
+  if (voiceInput && typeof options.voice === 'string') voiceInput.value = options.voice;
+  if (langInput && typeof options.lang === 'string') langInput.value = options.lang;
+  if (speedInput && typeof options.speed === 'number') {
+    speedInput.value = String(options.speed);
+  }
+  setSpeedValueDisplay(options.speed);
+}
+
+function syncOptionsFromInputs({ persist = true } = {}) {
+  const voiceInput = document.getElementById('voice');
+  const langInput = document.getElementById('lang');
+  const speedInput = document.getElementById('speed');
+  if (voiceInput) currentOptions.voice = voiceInput.value || 'af_heart';
+  if (langInput) currentOptions.lang = langInput.value || 'a';
+  if (speedInput) {
+    const parsed = parseFloat(speedInput.value);
+    currentOptions.speed = clampSpeed(Number.isFinite(parsed) ? parsed : currentOptions.speed);
+  }
+  setSpeedValueDisplay(currentOptions.speed);
+  if (persist) persistOptions(currentOptions);
+  return currentOptions;
+}
+
+function setOptionsDrawerOpenState(open) {
+  optionsDrawerOpen = !!open;
+  if (optionsDrawer) {
+    optionsDrawer.classList.toggle('open', optionsDrawerOpen);
+    optionsDrawer.setAttribute('aria-hidden', optionsDrawerOpen ? 'false' : 'true');
+  }
+  if (optionsBackdrop) {
+    optionsBackdrop.classList.toggle('active', optionsDrawerOpen);
+  }
+  if (optionsToggleBtn) {
+    optionsToggleBtn.setAttribute('aria-expanded', optionsDrawerOpen ? 'true' : 'false');
+  }
+  if (optionsDrawerOpen) {
+    requestAnimationFrame(() => {
+      const voiceInput = document.getElementById('voice');
+      if (voiceInput) voiceInput.focus();
+    });
+  }
+}
+
+function openOptionsDrawer() {
+  setOptionsDrawerOpenState(true);
+}
+
+function closeOptionsDrawer() {
+  setOptionsDrawerOpenState(false);
+}
+
+function toggleOptionsDrawer() {
+  setOptionsDrawerOpenState(!optionsDrawerOpen);
+}
+
+function handleGenerateClick() {
+  if (isCancelling) {
+    return;
+  }
+  if (isGenerating) {
+    cancelSynthesis({ userInitiated: true });
+    return;
+  }
+  if (isPreviewScreenActive()) {
+    startSynthesis();
+  }
 }
 
 function navigateToPreview() {
@@ -501,20 +719,29 @@ function navigateToInput() {
   showScreen('screen-input');
 }
 
-async function synthesizeAndPlay() {
+async function startSynthesis() {
+  if (isGenerating || isCancelling) {
+    return;
+  }
   const textArea = document.getElementById('text');
+  const status = document.getElementById('status');
+  if (!textArea || !status) return;
+
   const voiceInput = document.getElementById('voice');
   const speedInput = document.getElementById('speed');
   const langInput = document.getElementById('lang');
-  const status = document.getElementById('status');
+
+  syncOptionsFromInputs();
 
   const payload = {
     text: textArea.value,
-    voice: voiceInput.value || 'af_heart',
-    speed: parseFloat(speedInput.value) || 1.0,
-    lang_code: langInput.value || 'a',
+    voice: voiceInput && voiceInput.value ? voiceInput.value : currentOptions.voice,
+    speed: (() => {
+      const parsed = speedInput ? parseFloat(speedInput.value) : Number.NaN;
+      return clampSpeed(Number.isFinite(parsed) ? parsed : currentOptions.speed);
+    })(),
+    lang_code: langInput && langInput.value ? langInput.value : currentOptions.lang,
     split_pattern: '\n+',
-    // metadata for server-side sidecar json
     preview_html: currentPreviewHtml,
     source_kind: currentSourceKind,
     source_url: currentSourceUrl,
@@ -525,130 +752,161 @@ async function synthesizeAndPlay() {
 
   status.textContent = 'Synthesizing…';
   resetAlignmentState();
+  clearAudioSource();
+  setGeneratingState(true);
+
   try {
     const ws = new WebSocket('ws://127.0.0.1:8000/ws/synthesize');
-    let currentJobId = null;
-    let terminalSeen = false;
+    const synthesis = {
+      socket: ws,
+      jobId: null,
+      terminalSeen: false,
+      cancelled: false
+    };
+    activeSynthesis = synthesis;
 
     const closeWs = (code) => {
       try { ws.close(code || 1000); } catch (_) {}
     };
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'start', request: payload }));
+      try {
+        ws.send(JSON.stringify({ type: 'start', request: payload }));
+      } catch (err) {
+        console.error('Failed to send start message:', err);
+        status.textContent = `Error: ${err && err.message ? err.message : 'WebSocket send failed'}`;
+        hideProgressUi();
+        setGeneratingState(false);
+        activeSynthesis = null;
+        closeWs(1011);
+      }
     };
 
     ws.onmessage = async (ev) => {
+      if (activeSynthesis !== synthesis) return;
       try {
         const msg = JSON.parse(ev.data);
         if (!msg || typeof msg !== 'object') return;
-        if (!currentJobId && msg.job_id) currentJobId = msg.job_id;
+        if (!synthesis.jobId && msg.job_id) synthesis.jobId = msg.job_id;
         switch (msg.type) {
           case 'started':
             status.textContent = 'Synthesizing…';
-            try {
-              const bar = document.getElementById('progressFill');
-              if (bar) bar.style.width = '0%';
-              const wrap = document.getElementById('progress');
-              if (wrap) {
-                const card = wrap.closest('.card');
-                if (card) card.style.display = '';
-              }
-            } catch (_) {}
+            showProgressUi(0);
             break;
           case 'segment':
             if (typeof msg.progress === 'number') {
               const pct = Math.round(msg.progress * 100);
+              updateProgressUi(pct);
               status.textContent = `Synthesizing… ${pct}%`;
-              try {
-                const bar = document.getElementById('progressFill');
-                if (bar) bar.style.width = `${pct}%`;
-              } catch (_) {}
             } else {
               status.textContent = 'Synthesizing…';
             }
             break;
           case 'complete': {
-            terminalSeen = true;
-            if (!msg.ok || !msg.wav_rel_path) throw new Error('Invalid complete message');
-            const fileRes = await window.api.getSavedAudioFileUrl(msg.wav_rel_path);
-            if (!fileRes || !fileRes.ok || !fileRes.url) throw new Error('Could not resolve saved file URL');
-            audioElement.src = fileRes.url;
-            await audioElement.play();
-            status.textContent = 'Playing';
+            synthesis.terminalSeen = true;
             try {
-              const bar = document.getElementById('progressFill');
-              if (bar) bar.style.width = '100%';
-              const wrap = document.getElementById('progress');
-              if (wrap) {
-                const card = wrap.closest('.card');
-                if (card) card.style.display = 'none';
+              if (!msg.ok || !msg.wav_rel_path) throw new Error('Invalid complete message');
+              const fileRes = await window.api.getSavedAudioFileUrl(msg.wav_rel_path);
+              if (!fileRes || !fileRes.ok || !fileRes.url) throw new Error('Could not resolve saved file URL');
+              audioElement.src = fileRes.url;
+              await audioElement.play();
+              status.textContent = 'Playing';
+              updateProgressUi(100);
+              hideProgressUi({ resetWidth: false });
+              refreshSavedAudios();
+              if (msg.align_rel_path) {
+                const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
+                if (metaRes && metaRes.ok && metaRes.metadata) {
+                  captureAlignmentMetadata(metaRes.metadata);
+                }
               }
-            } catch (_) {}
-            refreshSavedAudios();
-            if (msg.align_rel_path) {
-              const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
-              if (metaRes && metaRes.ok && metaRes.metadata) {
-                captureAlignmentMetadata(metaRes.metadata);
-              }
+            } catch (err) {
+              console.error('Completion handling failed:', err);
+              status.textContent = `Error: ${err && err.message ? err.message : 'Playback failed'}`;
+              hideProgressUi();
             }
+            setGeneratingState(false);
+            activeSynthesis = null;
             closeWs(1000);
             break;
           }
           case 'cancelled':
-            terminalSeen = true;
+            synthesis.terminalSeen = true;
             status.textContent = 'Cancelled';
-            try {
-              const bar = document.getElementById('progressFill');
-              if (bar) bar.style.width = '0%';
-              const wrap = document.getElementById('progress');
-              if (wrap) {
-                const card = wrap.closest('.card');
-                if (card) card.style.display = 'none';
-              }
-            } catch (_) {}
+            hideProgressUi();
+            setGeneratingState(false);
+            activeSynthesis = null;
             closeWs(1000);
             break;
           case 'error':
-            terminalSeen = true;
+            synthesis.terminalSeen = true;
             status.textContent = `Error: ${msg && msg.message ? msg.message : 'Unknown error'}`;
-            try {
-              const bar = document.getElementById('progressFill');
-              if (bar) bar.style.width = '0%';
-              const wrap = document.getElementById('progress');
-              if (wrap) {
-                const card = wrap.closest('.card');
-                if (card) card.style.display = 'none';
-              }
-            } catch (_) {}
+            hideProgressUi();
+            setGeneratingState(false);
+            activeSynthesis = null;
             closeWs(1011);
             break;
           default:
             break;
         }
-      } catch (e) {
-        console.error('WS message handling failed:', e);
+      } catch (err) {
+        console.error('WS message handling failed:', err);
       }
+    };
+
+    ws.onerror = (ev) => {
+      if (activeSynthesis !== synthesis) return;
+      console.error('WebSocket error:', ev);
+      status.textContent = 'Error: connection failed';
+      hideProgressUi();
+      setGeneratingState(false);
+      activeSynthesis = null;
     };
 
     ws.onclose = () => {
-      if (!terminalSeen) {
-        status.textContent = 'Connection closed';
+      if (activeSynthesis !== synthesis) return;
+      if (!synthesis.terminalSeen) {
+        status.textContent = synthesis.cancelled ? 'Cancelled' : 'Connection closed';
+        hideProgressUi();
       }
+      setGeneratingState(false);
+      activeSynthesis = null;
     };
-
-    // Expose cancel for Stop button while WS active
-    const stopBtn = document.getElementById('stopBtn');
-    if (stopBtn) {
-      const stopHandler = () => {
-        try { ws.send(JSON.stringify({ type: 'cancel', job_id: currentJobId })); } catch (_) {}
-        closeWs(1000);
-      };
-      stopBtn.addEventListener('click', stopHandler, { once: true });
-    }
   } catch (err) {
     console.error(err);
     status.textContent = `Error: ${err && err.message ? err.message : 'WebSocket failed'}`;
+    hideProgressUi();
+    setGeneratingState(false);
+    activeSynthesis = null;
+  }
+}
+
+function cancelSynthesis({ userInitiated = false } = {}) {
+  if (!activeSynthesis) return;
+  const { socket } = activeSynthesis;
+  activeSynthesis.cancelled = true;
+  isCancelling = true;
+  const status = document.getElementById('status');
+  if (status) status.textContent = userInitiated ? 'Cancelling…' : 'Cancelling…';
+  if (generateBtn) {
+    generateBtn.classList.remove('btn-danger');
+    generateBtn.textContent = 'Cancelling…';
+    generateBtn.disabled = true;
+  }
+  suppressNextStopStatus = true;
+  try {
+    if (socket && socket.readyState === WebSocket.OPEN && activeSynthesis.jobId) {
+      socket.send(JSON.stringify({ type: 'cancel', job_id: activeSynthesis.jobId }));
+    }
+  } catch (_err) {
+    // ignore send failures during cancel
+  }
+  try {
+    if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+      socket.close(1000);
+    }
+  } catch (_err) {
+    // ignore close failures
   }
 }
 
@@ -662,14 +920,17 @@ function clearAudioSource() {
 }
 
 function stopPlayback() {
-  if (audioElement) {
-    audioElement.pause();
-    audioElement.currentTime = 0;
-    stopHighlightLoop();
-    clearHighlightDecorations();
-    const status = document.getElementById('status');
-    status.textContent = 'Stopped';
+  if (!audioElement) return;
+  audioElement.pause();
+  audioElement.currentTime = 0;
+  stopHighlightLoop();
+  clearHighlightDecorations();
+  const status = document.getElementById('status');
+  if (suppressNextStopStatus) {
+    suppressNextStopStatus = false;
+    return;
   }
+  status.textContent = 'Stopped';
 }
 
 function stripHtmlToText(htmlString) {
@@ -915,8 +1176,8 @@ async function handleOpenFile() {
       currentSourceUrl = lastOpenedFilePath;
       currentRawContent = null;
       currentRawContentType = 'application/pdf';
-      await renderPdfFromBytes(b64ToUint8Array(result.contentBase64), `file://${lastOpenedFilePath}`);
       navigateToPreview();
+      await renderPdfFromBytes(b64ToUint8Array(result.contentBase64), `file://${lastOpenedFilePath}`);
       return;
     }
     currentSourceKind = 'file';
@@ -951,6 +1212,7 @@ async function loadUrlAndRender(urlInput) {
       currentSourceUrl = res.url || url;
       currentRawContent = null;
       currentRawContentType = 'application/pdf';
+      navigateToPreview();
       await renderPdfFromBytes(b64ToUint8Array(res.bodyBase64), res.url || url);
     } else if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
       currentSourceKind = 'url';
@@ -985,6 +1247,8 @@ async function loadUrlAndRender(urlInput) {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  hideProgressUi();
+
   audioElement = document.getElementById('player');
   if (audioElement) {
     audioElement.addEventListener('play', () => {
@@ -1008,10 +1272,76 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  generateBtn = document.getElementById('generateBtn');
+  optionsToggleBtn = document.getElementById('optionsToggle');
+  optionsCloseBtn = document.getElementById('optionsClose');
+  optionsDoneBtn = document.getElementById('optionsDone');
+  optionsDrawer = document.getElementById('optionsDrawer');
+  optionsBackdrop = document.getElementById('optionsBackdrop');
+  speedValueLabel = document.getElementById('speedValue');
+  const voiceInput = document.getElementById('voice');
+  const langInput = document.getElementById('lang');
+  const speedInput = document.getElementById('speed');
+
+  if (generateBtn) {
+    generateBtn.addEventListener('click', handleGenerateClick);
+  }
+
+  if (optionsToggleBtn) {
+    optionsToggleBtn.addEventListener('click', toggleOptionsDrawer);
+    optionsToggleBtn.setAttribute('aria-haspopup', 'dialog');
+    optionsToggleBtn.setAttribute('aria-expanded', 'false');
+  }
+  if (optionsCloseBtn) optionsCloseBtn.addEventListener('click', closeOptionsDrawer);
+  if (optionsDoneBtn) optionsDoneBtn.addEventListener('click', closeOptionsDrawer);
+  if (optionsBackdrop) {
+    optionsBackdrop.addEventListener('click', (event) => {
+      if (event.target === optionsBackdrop) closeOptionsDrawer();
+    });
+  }
+
+  setOptionsDrawerOpenState(false);
+
+  const storedOptions = loadOptionsFromStorage();
+  if (storedOptions) currentOptions = storedOptions;
+  applyOptionsToInputs(currentOptions);
+  persistOptions(currentOptions);
+
+  if (voiceInput) {
+    voiceInput.addEventListener('input', () => {
+      currentOptions.voice = voiceInput.value || 'af_heart';
+    });
+    voiceInput.addEventListener('change', () => {
+      persistOptions(currentOptions);
+    });
+  }
+
+  if (langInput) {
+    langInput.addEventListener('change', () => {
+      currentOptions.lang = langInput.value || 'a';
+      persistOptions(currentOptions);
+    });
+  }
+
+  if (speedInput) {
+    speedInput.addEventListener('input', () => {
+      const value = clampSpeed(parseFloat(speedInput.value));
+      currentOptions.speed = value;
+      speedInput.value = String(value);
+      setSpeedValueDisplay(value);
+    });
+    speedInput.addEventListener('change', () => {
+      persistOptions(currentOptions);
+    });
+  }
+
+  setGeneratingState(false);
+  const initialScreen = isPreviewScreenActive() ? 'screen-preview' : 'screen-input';
+  updateShellForScreen(initialScreen);
+
   const openFileBtn = document.getElementById('openFileBtn');
   if (openFileBtn) openFileBtn.addEventListener('click', handleOpenFile);
-  document.getElementById('playBtn').addEventListener('click', synthesizeAndPlay);
-  document.getElementById('stopBtn').addEventListener('click', stopPlayback);
+
   const previewBtn = document.getElementById('previewBtn');
   const backBtn = document.getElementById('backBtn');
   const inputText = document.getElementById('inputText');
@@ -1046,12 +1376,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (backBtn) {
     backBtn.addEventListener('click', () => {
+      cancelSynthesis({ userInitiated: true });
       stopPlayback();
       navigateToInput();
     });
   }
 
-  // URL modal
   function openUrlModal() {
     if (!urlModalBackdrop) return;
     urlModalBackdrop.style.display = 'flex';
@@ -1088,6 +1418,25 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && optionsDrawerOpen) {
+      event.preventDefault();
+      closeOptionsDrawer();
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target;
+    const tag = target && target.tagName ? target.tagName.toLowerCase() : '';
+    const isEditable = target && (target.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select');
+    if (isEditable) return;
+    if (event.key === 'o' || event.key === 'O') {
+      event.preventDefault();
+      toggleOptionsDrawer();
+    } else if ((event.key === 'g' || event.key === 'G') && generateBtn && !generateBtn.disabled) {
+      event.preventDefault();
+      handleGenerateClick();
+    }
+  });
 });
 
 
@@ -1237,6 +1586,8 @@ async function openSavedRecording(metadata, wavRelPath) {
     const speedInput = document.getElementById('speed');
     const langInput = document.getElementById('lang');
 
+    navigateToPreview();
+
     // If saved recording came from a PDF source, attempt to re-render the PDF for preview for best highlighting
     const kind = (metadata.source_kind || '').toLowerCase();
     const rawType = (metadata.raw_content_type || '').toLowerCase();
@@ -1283,9 +1634,25 @@ async function openSavedRecording(metadata, wavRelPath) {
       onPreviewDomUpdated();
     }
 
-    voiceInput.value = metadata.voice || voiceInput.value || 'af_heart';
-    if (typeof metadata.speed === 'number') speedInput.value = String(metadata.speed);
-    langInput.value = metadata.lang_code || langInput.value || 'a';
+    const appliedVoice = metadata.voice || voiceInput.value || 'af_heart';
+    voiceInput.value = appliedVoice;
+    const appliedLang = metadata.lang_code || langInput.value || 'a';
+    langInput.value = appliedLang;
+    let appliedSpeed = currentOptions.speed;
+    if (typeof metadata.speed === 'number') {
+      appliedSpeed = clampSpeed(metadata.speed);
+    } else if (speedInput.value) {
+      const parsedSpeed = parseFloat(speedInput.value);
+      if (Number.isFinite(parsedSpeed)) {
+        appliedSpeed = clampSpeed(parsedSpeed);
+      }
+    }
+    speedInput.value = String(appliedSpeed);
+    currentOptions.voice = appliedVoice;
+    currentOptions.lang = appliedLang;
+    currentOptions.speed = appliedSpeed;
+    setSpeedValueDisplay(appliedSpeed);
+    persistOptions(currentOptions);
 
     currentPreviewHtml = metadata.preview_html || null;
     currentSourceKind = metadata.source_kind || 'text';
