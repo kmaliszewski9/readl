@@ -1,5 +1,3 @@
-const SERVICE_URL = 'http://127.0.0.1:8000';
-
 let audioElement;
 let lastOpenedFilePath = null;
 let lastLoadedUrl = null;
@@ -435,7 +433,6 @@ function ensureHighlightSet() {
 }
 
 function applyHighlightIndex(targetIndex) {
-  console.log('applyHighlightIndex', targetIndex);
   const highlightSet = ensureHighlightSet();
   if (!highlightSet) {
     lastHighlightedTokenIndex = targetIndex;
@@ -592,7 +589,6 @@ async function synthesizeAndPlay() {
             if (msg.align_rel_path) {
               const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
               if (metaRes && metaRes.ok && metaRes.metadata) {
-                logAlignment(metaRes.metadata, msg.wav_rel_path);
                 captureAlignmentMetadata(metaRes.metadata);
               }
             }
@@ -704,6 +700,28 @@ function isHtmlPath(filePath) {
   return lower.endsWith('.html') || lower.endsWith('.htm');
 }
 
+function isPdfPath(filePath) {
+  if (!filePath) return false;
+  const lower = filePath.toLowerCase();
+  return lower.endsWith('.pdf');
+}
+
+function isPdfContentType(ct) {
+  return typeof ct === 'string' && ct.toLowerCase().includes('application/pdf');
+}
+
+function b64ToUint8Array(b64) {
+  try {
+    const bin = atob(b64 || '');
+    const len = bin.length >>> 0;
+    const out = new Uint8Array(len);
+    for (let i = 0; i < len; i += 1) out[i] = bin.charCodeAt(i) & 0xff;
+    return out;
+  } catch (_) {
+    return new Uint8Array(0);
+  }
+}
+
 function isLikelyUrl(str) {
   if (!str || typeof str !== 'string') return false;
   const s = str.trim();
@@ -774,6 +792,91 @@ function renderReaderOrSanitized(html, baseUrl) {
   renderSanitizedHtmlAndExtractText(html);
 }
 
+async function extractPdfText(pdf) {
+  const parts = [];
+  try {
+    const pageCount = pdf && pdf.numPages ? pdf.numPages : 0;
+    for (let i = 1; i <= pageCount; i += 1) {
+      const page = await pdf.getPage(i);
+      const tc = await page.getTextContent();
+      const txt = (tc.items || []).map(it => (it && it.str) ? it.str : '').join(' ').trim();
+      if (txt) parts.push(txt);
+    }
+  } catch (_) {
+    // ignore
+  }
+  return parts.join('\n\n');
+}
+
+async function renderPdfFromBytes(bytes, sourceUrl) {
+  const previewEl = document.getElementById('preview');
+  const textArea = document.getElementById('text');
+  if (!previewEl) return;
+
+  // Clear previous content and create the PDF viewer element
+  previewEl.innerHTML = '';
+  const containerEl = document.createElement('div');
+  containerEl.style.position = 'absolute';
+  containerEl.style.inset = '0';
+  containerEl.style.overflow = 'auto';
+  previewEl.appendChild(containerEl);
+
+  const viewerEl = document.createElement('div');
+  viewerEl.className = 'pdfViewer';
+  containerEl.appendChild(viewerEl);
+
+  if (typeof window.pdfjsLib === 'undefined' || typeof window.pdfjsViewer === 'undefined') {
+    previewEl.textContent = 'PDF viewer unavailable (pdfjs not loaded).';
+    return;
+  }
+
+  const eventBus = new window.pdfjsViewer.EventBus();
+  const viewer = new window.pdfjsViewer.PDFViewer({
+    container: containerEl,
+    viewer: viewerEl,
+    eventBus,
+    textLayerMode: 2
+  });
+
+  // Debounce reindexing as pages/text layers render or the view changes
+  let reindexTimer = null;
+  const requestReindex = () => {
+    if (reindexTimer) clearTimeout(reindexTimer);
+    reindexTimer = setTimeout(() => {
+      onPreviewDomUpdated();
+    }, 50);
+  };
+
+  eventBus.on('pagesinit', requestReindex);
+  eventBus.on('pagerendered', requestReindex);
+  eventBus.on('textlayerrendered', requestReindex);
+  eventBus.on('scalechanging', requestReindex);
+  eventBus.on('rotationchanging', requestReindex);
+
+  // Load the document
+  const loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+  const pdfDocument = await loadingTask.promise;
+  viewer.setDocument(pdfDocument);
+  try { viewer.currentScaleValue = 'page-width'; } catch (_) {}
+
+  // Extract text for TTS from the same source as the text layer
+  try {
+    const text = await extractPdfText(pdfDocument);
+    textArea.value = text || '';
+  } catch (_) {
+    // ignore
+  }
+
+  currentPreviewHtml = null;
+  currentTitle = null;
+  currentRawContentType = 'application/pdf';
+  if (sourceUrl) currentSourceUrl = sourceUrl;
+  // We intentionally do not stash raw PDF bytes to avoid bloating metadata.
+
+  // Kick an initial reindex in case first page rendered synchronously
+  requestReindex();
+}
+
 function renderPreviewAndExtractText(filePath, rawContent) {
   const previewEl = document.getElementById('preview');
   const textArea = document.getElementById('text');
@@ -805,12 +908,21 @@ async function handleOpenFile() {
     const result = await window.api.openFile();
     if (!result || result.canceled) return;
     lastOpenedFilePath = result.filePath || null;
+    resetAlignmentState();
+    clearAudioSource();
+    if ((result.contentType && isPdfContentType(result.contentType)) && result.contentBase64) {
+      currentSourceKind = 'file';
+      currentSourceUrl = lastOpenedFilePath;
+      currentRawContent = null;
+      currentRawContentType = 'application/pdf';
+      await renderPdfFromBytes(b64ToUint8Array(result.contentBase64), `file://${lastOpenedFilePath}`);
+      navigateToPreview();
+      return;
+    }
     currentSourceKind = 'file';
     currentSourceUrl = lastOpenedFilePath;
     currentRawContent = result.content || '';
     currentRawContentType = getContentTypeForPath(lastOpenedFilePath);
-    resetAlignmentState();
-  clearAudioSource();
     renderPreviewAndExtractText(lastOpenedFilePath, result.content || '');
     navigateToPreview();
   } catch (err) {
@@ -832,15 +944,25 @@ async function loadUrlAndRender(urlInput) {
       throw new Error(res && res.error ? res.error : 'Failed to load URL');
     }
     const contentType = (res.contentType || '').toLowerCase();
-    currentSourceKind = 'url';
-    currentSourceUrl = res.url || url;
-    currentRawContent = res.body || '';
-    currentRawContentType = contentType || null;
     resetAlignmentState();
     clearAudioSource();
-    if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+    if (isPdfContentType(contentType) && res.bodyBase64) {
+      currentSourceKind = 'url';
+      currentSourceUrl = res.url || url;
+      currentRawContent = null;
+      currentRawContentType = 'application/pdf';
+      await renderPdfFromBytes(b64ToUint8Array(res.bodyBase64), res.url || url);
+    } else if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+      currentSourceKind = 'url';
+      currentSourceUrl = res.url || url;
+      currentRawContent = res.body || '';
+      currentRawContentType = contentType || null;
       renderReaderOrSanitized(res.body || '', res.url || url);
     } else if (contentType.includes('text/plain')) {
+      currentSourceKind = 'url';
+      currentSourceUrl = res.url || url;
+      currentRawContent = res.body || '';
+      currentRawContentType = contentType || null;
       const pre = `<pre style="white-space:pre-wrap;">${(res.body || '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -848,6 +970,10 @@ async function loadUrlAndRender(urlInput) {
       renderSanitizedHtmlAndExtractText(pre);
     } else {
       // Fallback: try to render as HTML
+      currentSourceKind = 'url';
+      currentSourceUrl = res.url || url;
+      currentRawContent = res.body || '';
+      currentRawContentType = contentType || null;
       renderReaderOrSanitized(res.body || '', res.url || url);
     }
     status.textContent = 'URL loaded';
@@ -1099,6 +1225,7 @@ function getContentTypeForPath(filePath) {
   if (!filePath) return 'text/plain';
   const lower = filePath.toLowerCase();
   if (isHtmlPath(lower)) return 'text/html';
+  if (isPdfPath(lower)) return 'application/pdf';
   return 'text/plain';
 }
 
@@ -1110,16 +1237,57 @@ async function openSavedRecording(metadata, wavRelPath) {
     const speedInput = document.getElementById('speed');
     const langInput = document.getElementById('lang');
 
-    const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
-    previewEl.innerHTML = safe;
-    textArea.value = metadata.text || '';
-    onPreviewDomUpdated();
+    // If saved recording came from a PDF source, attempt to re-render the PDF for preview for best highlighting
+    const kind = (metadata.source_kind || '').toLowerCase();
+    const rawType = (metadata.raw_content_type || '').toLowerCase();
+    const srcUrl = metadata.source_url || null;
+    const isPdf = rawType.includes('application/pdf') || (srcUrl && /\.pdf($|\?)/i.test(srcUrl));
+    if (isPdf && window.pdfjsLib) {
+      try {
+        // Prefer to re-fetch via URL for URL-based sources
+        if (kind === 'url' && srcUrl) {
+          const res = await window.api.fetchUrl(srcUrl);
+          if (res && res.ok && res.bodyBase64 && /application\/pdf/i.test(res.contentType || '')) {
+            await renderPdfFromBytes(b64ToUint8Array(res.bodyBase64), srcUrl);
+          } else {
+            // Fallback to text-only preview
+            const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
+            previewEl.innerHTML = safe;
+            onPreviewDomUpdated();
+          }
+        } else if (kind === 'file' && srcUrl && srcUrl.startsWith('file://')) {
+          const absPath = srcUrl.replace(/^file:\/\//, '');
+          const rf = await window.api.readFileBase64(absPath);
+          if (rf && rf.ok && rf.base64) {
+            await renderPdfFromBytes(b64ToUint8Array(rf.base64), srcUrl);
+          } else {
+            const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
+            previewEl.innerHTML = safe;
+            onPreviewDomUpdated();
+          }
+        } else {
+          const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
+          previewEl.innerHTML = safe;
+          onPreviewDomUpdated();
+        }
+      } catch (_) {
+        const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
+        previewEl.innerHTML = safe;
+        onPreviewDomUpdated();
+      }
+      textArea.value = metadata.text || '';
+    } else {
+      const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
+      previewEl.innerHTML = safe;
+      textArea.value = metadata.text || '';
+      onPreviewDomUpdated();
+    }
 
     voiceInput.value = metadata.voice || voiceInput.value || 'af_heart';
     if (typeof metadata.speed === 'number') speedInput.value = String(metadata.speed);
     langInput.value = metadata.lang_code || langInput.value || 'a';
 
-    currentPreviewHtml = safe;
+    currentPreviewHtml = metadata.preview_html || null;
     currentSourceKind = metadata.source_kind || 'text';
     currentSourceUrl = metadata.source_url || null;
     currentRawContent = metadata.raw_content || metadata.text || '';
@@ -1141,7 +1309,6 @@ async function openSavedRecording(metadata, wavRelPath) {
     }
 
     captureAlignmentMetadata(metadata);
-    logAlignment(metadata, wavRelPath);
   } catch (e) {
     console.error('Failed to open saved recording:', e);
   }

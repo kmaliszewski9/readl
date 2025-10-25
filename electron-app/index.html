@@ -309,7 +309,14 @@
 
     <script src="node_modules/dompurify/dist/purify.min.js"></script>
     <script src="node_modules/@mozilla/readability/Readability.js"></script>
-    <script src="node_modules/@mozilla/readability/Readability-readerable.js"></script>
+    <link rel="stylesheet" href="./node_modules/pdfjs-dist/web/pdf_viewer.css">
+    <script type="module">
+      import * as pdfjsLib from './node_modules/pdfjs-dist/build/pdf.mjs';
+      import * as pdfjsViewer from './node_modules/pdfjs-dist/web/pdf_viewer.mjs';
+      window.pdfjsLib = pdfjsLib;
+      window.pdfjsViewer = pdfjsViewer;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = './node_modules/pdfjs-dist/build/pdf.worker.mjs';
+    </script>
     <script src="renderer.js"></script>
   </body>
   </html>

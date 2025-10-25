@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('api', {
     const result = await ipcRenderer.invoke('fetch-url', url);
     return result;
   },
+  readFileBase64: async (absPath) => {
+    return await ipcRenderer.invoke('read-file-base64', absPath);
+  },
   listSavedAudios: async () => {
     return await ipcRenderer.invoke('audios-list');
   },

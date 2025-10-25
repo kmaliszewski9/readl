@@ -1,5 +1,4 @@
 import os
-import io
 import re
 import json
 import logging
@@ -13,9 +12,8 @@ from typing import Dict, Optional
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from starlette.responses import JSONResponse
 from starlette.websockets import WebSocketState
 
@@ -30,21 +28,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-class SynthesisRequest(BaseModel):
-    text: str
-    voice: Optional[str] = "af_heart"
-    speed: Optional[float] = 1.0
-    lang_code: Optional[str] = "a"
-    split_pattern: Optional[str] = r"\n+"
-    # Optional metadata from client to reconstruct preview
-    preview_html: Optional[str] = None
-    source_kind: Optional[str] = None  # url | file | text
-    source_url: Optional[str] = None
-    raw_content: Optional[str] = None
-    raw_content_type: Optional[str] = None  # e.g., text/html, text/plain
-    title: Optional[str] = None
 
 
 app = FastAPI(title="Kokoro TTS Service", version="0.1.0")
@@ -173,7 +156,7 @@ async def ws_synthesize(websocket: WebSocket) -> None:
         voice_local = req_payload.get("voice") or "af_heart"
         speed_local = req_payload.get("speed") or 1.0
         lang_local = req_payload.get("lang_code") or "a"
-        split_pattern_local = r"ź"
+        split_pattern_local = (req_payload.get("split_pattern") or r"\n+")
 
         logger.info("=" * 80)
         logger.info("TTS Synthesis Request (WS):")
@@ -361,7 +344,7 @@ async def ws_synthesize(websocket: WebSocket) -> None:
         speed_local = req_payload.get("speed") or 1.0
         lang_local = req_payload.get("lang_code") or "a"
         # Mirror split pattern used in generation to keep counts consistent
-        split_pattern_local = r"ź"
+        split_pattern_local = (req_payload.get("split_pattern") or r"\n+")
 
         quiet_pipeline = KPipeline(lang_code=(lang_local or "a"), model=False)
         total_segments = sum(1 for _ in quiet_pipeline(
@@ -371,9 +354,6 @@ async def ws_synthesize(websocket: WebSocket) -> None:
             split_pattern=split_pattern_local,
             model=False
         ))
-        # Normalize to int if zero segments were produced
-        if total_segments is not None and total_segments < 0:
-            total_segments = None
     except Exception:
         total_segments = None
 

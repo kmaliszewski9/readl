@@ -8,7 +8,7 @@ ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
     filters: [
-      { name: 'Documents', extensions: ['html', 'htm', 'txt'] }
+      { name: 'Documents', extensions: ['html', 'htm', 'txt', 'pdf'] }
     ]
   });
 
@@ -18,6 +18,10 @@ ipcMain.handle('open-file-dialog', async () => {
 
   const filePath = result.filePaths[0];
   try {
+    if (/\.pdf$/i.test(filePath)) {
+      const buf = fs.readFileSync(filePath);
+      return { canceled: false, filePath, contentBase64: buf.toString('base64'), contentType: 'application/pdf' };
+    }
     const content = fs.readFileSync(filePath, 'utf8');
     return { canceled: false, filePath, content };
   } catch (err) {
@@ -45,6 +49,10 @@ ipcMain.handle('fetch-url', async (_event, urlInput) => {
     });
 
     const contentType = res.headers.get('content-type') || '';
+    if (/application\/pdf/i.test(contentType)) {
+      const ab = await res.arrayBuffer();
+      return { ok: true, url: res.url || normalized, contentType, bodyBase64: Buffer.from(ab).toString('base64') };
+    }
     const body = await res.text();
     return { ok: true, url: res.url || normalized, contentType, body };
   } catch (err) {
@@ -177,6 +185,20 @@ ipcMain.handle('audios-read-align', async (_event, relPath) => {
     const { type, version, ...rest } = header || {};
     const metadata = { ...rest, segments };
     return { ok: true, metadata };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+});
+
+// Utility: read an absolute file as base64 (for legacy saved PDFs, if needed)
+try { ipcMain.removeHandler('read-file-base64'); } catch (e) {}
+ipcMain.handle('read-file-base64', async (_event, absPath) => {
+  try {
+    if (typeof absPath !== 'string' || !absPath) return { ok: false, error: 'Invalid path' };
+    const st = statSafe(absPath);
+    if (!st || !st.isFile()) return { ok: false, error: 'Not found' };
+    const buf = fs.readFileSync(absPath);
+    return { ok: true, base64: buf.toString('base64') };
   } catch (err) {
     return { ok: false, error: String(err && err.message ? err.message : err) };
   }

@@ -5,7 +5,7 @@ Electron app + Python FastAPI service to synthesize speech locally using Kokoro-
 - Paste plain text or a URL (auto-fetches website and shows preview)
 - Pick voice, language, and speed
 - Audio is saved to disk; play from disk and manage recordings
-- Open local HTML/TXT files
+- Open local HTML/TXT/PDF files
 - See a sanitized, formatted preview; text is auto-extracted for TTS. When input is HTML or a website URL, the app attempts to parse the page using a Reader Mode extractor (Mozilla Readability) to focus on the main article content. If Reader Mode fails, it falls back to sanitized full-page text.
 - When token-level alignment is available, the preview highlights each spoken word in sync with playback (requires a browser engine with the CSS Highlight API, e.g. Chromium 105+).
 
@@ -132,7 +132,7 @@ npm start
 Usage:
 
 - Paste text or a URL. If you paste/type a URL (e.g. `https://example.com` or `example.com`), the app fetches the page, renders a sanitized preview, and extracts plain text automatically into the textarea for TTS.
-- Or click “Open File…” to select an `.html`/`.htm` or `.txt` file.
+- Or click “Open File…” to select an `.html`/`.htm`, `.txt`, or `.pdf` file.
 - Choose a voice (e.g. `af_heart`), select language (e.g. `a` for US English), adjust speed, and press Play.
 
 Notes:
@@ -140,6 +140,8 @@ Notes:
 - HTML is sanitized at render-time (JavaScript is not executed) using DOMPurify.
 - Website URLs are fetched by the app (no CORS prompts). HTML/plain text responses are supported; other content types fall back to HTML rendering. Bare domains are auto-prefixed with `https://`.
   - For HTML pages, the app first tries Reader Mode (Readability) extraction to isolate the main article and uses that for both preview and TTS text.
+  - For PDF files/URLs, the app renders with PDF.js using a real text layer (selectable `<span>` text). The TTS text is derived from the same PDF.js `getTextContent()` output to minimize mismatches with the text layer.
+  - The existing highlighting pipeline is reused for PDFs: we rebuild the preview text-node index when the PDF text layer renders, and when view changes (zoom/rotation). Tokens are mapped to DOM Ranges and painted via the CSS Highlight API.
   
 The app connects to the local Python service at `ws://127.0.0.1:8000/ws/synthesize`. The service saves audio to disk on completion; the app plays the file directly from disk and loads alignment from the sidecar NDJSON.
 
