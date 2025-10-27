@@ -7,6 +7,11 @@ let currentRawContent = null;
 let currentRawContentType = null;
 let currentPreviewHtml = null;
 let currentTitle = null;
+let activeLibraryRelPath = null;
+let savedAudiosLoading = false;
+const MAX_LIBRARY_SKELETON_ROWS = 6;
+const LIBRARY_EMPTY_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24"><path fill="currentColor" d="M5.5 4h4.75A2.75 2.75 0 0 1 13 6.75v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 16.25v-10A2.25 2.25 0 0 1 6.25 4zM18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5A1.5 1.5 0 0 0 20 15.5v-10A1.5 1.5 0 0 0 18.5 4z"/></svg>';
+const LIBRARY_ERROR_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 5h2v7h-2zm0 9h2v2h-2z"/></svg>';
 
 let currentAlignmentMetadata = null;
 let flattenedAlignmentTokens = [];
@@ -813,7 +818,8 @@ async function startSynthesis() {
               status.textContent = 'Playing';
               updateProgressUi(100);
               hideProgressUi({ resetWidth: false });
-              refreshSavedAudios();
+              setActiveLibraryRow(msg.wav_rel_path || null);
+              await refreshSavedAudios({ showSkeleton: false });
               if (msg.align_rel_path) {
                 const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
                 if (metaRes && metaRes.ok && metaRes.metadata) {
@@ -1171,6 +1177,7 @@ async function handleOpenFile() {
     lastOpenedFilePath = result.filePath || null;
     resetAlignmentState();
     clearAudioSource();
+    setActiveLibraryRow(null);
     if ((result.contentType && isPdfContentType(result.contentType)) && result.contentBase64) {
       currentSourceKind = 'file';
       currentSourceUrl = lastOpenedFilePath;
@@ -1207,6 +1214,7 @@ async function loadUrlAndRender(urlInput) {
     const contentType = (res.contentType || '').toLowerCase();
     resetAlignmentState();
     clearAudioSource();
+    setActiveLibraryRow(null);
     if (isPdfContentType(contentType) && res.bodyBase64) {
       currentSourceKind = 'url';
       currentSourceUrl = res.url || url;
@@ -1364,6 +1372,7 @@ window.addEventListener('DOMContentLoaded', () => {
       currentTitle = null;
       resetAlignmentState();
       clearAudioSource();
+      setActiveLibraryRow(null);
       if (isLikelyUrl(content)) {
         navigateToPreview();
         loadUrlAndRender(content);
@@ -1441,129 +1450,393 @@ window.addEventListener('DOMContentLoaded', () => {
 
 
 
-function renderSavedAudiosTree(container, items) {
-  // Flat list of saved recordings, WAV files only; no JSON sidecars or folders
-  function isWav(item) {
-    return item && item.type === 'file' && /\.wav$/i.test(item.name || '');
-  }
-  function getDateFromRelPath(relPath) {
-    if (!relPath) return '';
-    const first = String(relPath).split('/')[0] || '';
-    // Expect YYYY-MM-DD
-    return first;
-  }
-  function getTimestampFromFileName(name) {
-    const m = String(name).match(/^(\d{6,})_/); // HHMMSSmmm...
-    return m ? m[1] : '';
-  }
-  function getBaseName(p) {
-    if (!p) return '';
-    const parts = String(p).split(/[\\\/]/);
-    return parts[parts.length - 1] || '';
-  }
-
-  const wavItems = (items || []).filter(isWav).sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
-
-  container.innerHTML = '';
-  const list = document.createElement('div');
-
-  for (const file of wavItems) {
-    const row = document.createElement('div');
-    row.style.display = 'flex';
-    row.style.alignItems = 'center';
-    row.style.gap = '8px';
-    row.style.margin = '4px 0';
-    row.style.cursor = 'pointer';
-
-    const label = document.createElement('span');
-    label.style.flex = '1 1 auto';
-    const defaultLabel = String(file.name || '').replace(/\.wav$/i, '');
-    label.textContent = defaultLabel;
-
-    const dateSpan = document.createElement('span');
-    dateSpan.style.color = 'var(--muted)';
-    dateSpan.style.fontSize = '12px';
-    dateSpan.textContent = getDateFromRelPath(file.relPath);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'btn btn-secondary';
-    delBtn.textContent = 'Delete';
-
-    // Attach actions
-    let cachedMeta = null;
-    row.addEventListener('click', async () => {
-      if (cachedMeta) {
-        openSavedRecording(cachedMeta, file.relPath);
-        return;
-      }
-      const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
-      const metaRes = await window.api.getSavedAudioAlignment(alignRel);
-      if (metaRes && metaRes.ok && metaRes.metadata) {
-        cachedMeta = metaRes.metadata;
-        openSavedRecording(metaRes.metadata, file.relPath);
-      }
-    });
-
-    delBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const ok = confirm(`Delete ${file.name}?`);
-      if (!ok) return;
-      const res = await window.api.deleteSavedAudio(file.relPath);
-      if (res && res.ok) {
-        await refreshSavedAudios();
-      }
-    });
-
-    // Resolve label from metadata
-    (async () => {
-      try {
-        const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
-        const metaRes = await window.api.getSavedAudioAlignment(alignRel);
-        if (!metaRes || !metaRes.ok || !metaRes.metadata) return;
-        cachedMeta = metaRes.metadata;
-        const kind = (cachedMeta.source_kind || '').toLowerCase();
-        if (kind === 'text') {
-          const ts = getTimestampFromFileName(file.name || '') || '';
-          label.textContent = ts ? `quick-${ts}` : `quick`;
-        } else if (kind === 'file' && cachedMeta.source_url) {
-          const base = getBaseName(cachedMeta.source_url);
-          label.textContent = base || label.textContent;
-        } else {
-          // leave default label
-        }
-      } catch (_) {
-        // ignore
-      }
-    })();
-
-    const left = document.createElement('div');
-    left.style.display = 'flex';
-    left.style.flex = '1 1 auto';
-    left.style.alignItems = 'center';
-    left.style.gap = '8px';
-    left.appendChild(label);
-    if (dateSpan.textContent) left.appendChild(dateSpan);
-
-    row.appendChild(left);
-    row.appendChild(delBtn);
-    list.appendChild(row);
-  }
-
-  container.appendChild(list);
+function setActiveLibraryRow(relPath) {
+  activeLibraryRelPath = relPath || null;
+  const container = document.getElementById('savedAudios');
+  if (!container) return;
+  const rows = container.querySelectorAll('.list-row');
+  rows.forEach((row) => {
+    if (!row || !row.dataset) return;
+    const isMatch = activeLibraryRelPath && row.dataset.relPath === activeLibraryRelPath;
+    if (isMatch) {
+      row.classList.add('is-active');
+    } else {
+      row.classList.remove('is-active');
+    }
+  });
 }
 
-async function refreshSavedAudios() {
-  const status = document.getElementById('status');
+function renderSavedAudiosSkeleton(container, count = MAX_LIBRARY_SKELETON_ROWS) {
+  if (!container) return;
+  container.setAttribute('aria-busy', 'true');
+  container.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  for (let i = 0; i < count; i += 1) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'skeleton-row';
+    fragment.appendChild(placeholder);
+  }
+  container.appendChild(fragment);
+}
+
+function renderSavedAudiosMessage(container, { icon, title, body, actions = [] }) {
+  if (!container) return;
+  container.setAttribute('aria-busy', 'false');
+  container.innerHTML = '';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'empty-state';
+  wrapper.setAttribute('role', 'status');
+
+  if (icon) {
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'empty-state-icon';
+    iconWrap.innerHTML = icon;
+    wrapper.appendChild(iconWrap);
+  }
+
+  if (title) {
+    const titleEl = document.createElement('strong');
+    titleEl.textContent = title;
+    wrapper.appendChild(titleEl);
+  }
+
+  if (body) {
+    const bodyEl = document.createElement('p');
+    bodyEl.textContent = body;
+    wrapper.appendChild(bodyEl);
+  }
+
+  if (actions.length) {
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'empty-state-actions';
+    actions.forEach((action) => {
+      if (!action || typeof action.label !== 'string') return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `btn btn-ghost${action.variant === 'danger' ? ' btn-ghost-danger' : ''}`;
+      btn.textContent = action.label;
+      if (typeof action.onClick === 'function') {
+        btn.addEventListener('click', action.onClick);
+      }
+      actionsWrap.appendChild(btn);
+    });
+    wrapper.appendChild(actionsWrap);
+  }
+
+  container.appendChild(wrapper);
+}
+
+function renderSavedAudiosEmpty(container) {
+  const openFileButton = document.getElementById('openFileBtn');
+  const addUrlButton = document.getElementById('openUrlModalBtn');
+  renderSavedAudiosMessage(container, {
+    icon: LIBRARY_EMPTY_ICON,
+    title: 'Your library is empty',
+    body: 'Import a file, paste text, or add a URL to get started.',
+    actions: [
+      {
+        label: 'Open File…',
+        onClick: () => {
+          if (openFileButton) openFileButton.click();
+        }
+      },
+      {
+        label: 'Add URL…',
+        onClick: () => {
+          if (addUrlButton) addUrlButton.click();
+        }
+      }
+    ]
+  });
+}
+
+function renderSavedAudiosError(container, message) {
+  renderSavedAudiosMessage(container, {
+    icon: LIBRARY_ERROR_ICON,
+    title: 'Unable to load library',
+    body: message || 'Try again in a moment.',
+    actions: [
+      {
+        label: 'Retry',
+        onClick: () => {
+          refreshSavedAudios();
+        }
+      }
+    ]
+  });
+}
+
+function getDateSegmentFromRelPath(relPath) {
+  if (!relPath) return '';
+  const [first] = String(relPath).split('/');
+  return first || '';
+}
+
+function formatLibraryDate(relPath) {
+  const rawSegment = getDateSegmentFromRelPath(relPath);
+  if (!rawSegment) return '—';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawSegment)) return rawSegment;
+  const parts = rawSegment.split('-');
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return rawSegment;
+  const date = new Date(year, month - 1, day);
+  if (Number.isNaN(date.getTime())) return rawSegment;
   try {
-    const res = await window.api.listSavedAudios();
-    if (!res || !res.items) return;
-    const container = document.getElementById('savedAudios');
-    if (container) {
-      renderSavedAudiosTree(container, res.items);
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (_) {
+    return rawSegment;
+  }
+}
+
+function getBaseName(input) {
+  if (!input) return '';
+  const parts = String(input).split(/[\\/]/);
+  return parts[parts.length - 1] || '';
+}
+
+function extractDomain(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    return (parsed.hostname || '').replace(/^www\./i, '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function getTimestampFromFileName(name) {
+  const match = String(name || '').match(/^(\d{6,})_/);
+  return match ? match[1] : '';
+}
+
+function deriveDefaultLabel(file) {
+  return String(file && file.name ? file.name : '').replace(/\.wav$/i, '');
+}
+
+function deriveLabelFromMetadata(file, metadata) {
+  if (!metadata) return null;
+  if (metadata.title && typeof metadata.title === 'string' && metadata.title.trim()) {
+    return metadata.title.trim();
+  }
+  const kind = (metadata.source_kind || '').toLowerCase();
+  if (kind === 'text') {
+    const ts = getTimestampFromFileName(file && file.name);
+    return ts ? `quick-${ts}` : 'Quick capture';
+  }
+  if (metadata.source_url) {
+    if (kind === 'file') {
+      return getBaseName(metadata.source_url) || null;
     }
+    if (kind === 'url') {
+      return extractDomain(metadata.source_url) || getBaseName(metadata.source_url);
+    }
+  }
+  return null;
+}
+
+function deriveLibrarySubtitle(metadata, currentLabel) {
+  if (!metadata) return '';
+  const kind = (metadata.source_kind || '').toLowerCase();
+  let subtitle = '';
+  if (kind === 'url' && metadata.source_url) {
+    subtitle = extractDomain(metadata.source_url);
+  } else if (kind === 'file' && metadata.source_url) {
+    subtitle = getBaseName(metadata.source_url);
+  } else if (kind === 'text') {
+    subtitle = 'Quick capture';
+  }
+  if (!subtitle) return '';
+  if (currentLabel && subtitle.toLowerCase() === currentLabel.toLowerCase()) {
+    return '';
+  }
+  return subtitle;
+}
+
+function isWavItem(item) {
+  return item && item.type === 'file' && /\.wav$/i.test(item.name || '');
+}
+
+function renderSavedAudiosTree(container, items) {
+  if (!container) return;
+  const wavItems = (items || []).filter(isWavItem).sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  if (!wavItems.length) {
+    renderSavedAudiosEmpty(container);
+    return;
+  }
+
+  container.setAttribute('aria-busy', 'false');
+  container.innerHTML = '';
+
+  const list = document.createElement('div');
+  list.className = 'list';
+  list.setAttribute('role', 'list');
+
+  const fragment = document.createDocumentFragment();
+
+  wavItems.forEach((file) => {
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    row.setAttribute('role', 'listitem');
+    row.setAttribute('tabindex', '0');
+    row.dataset.relPath = file.relPath || '';
+    if (activeLibraryRelPath && row.dataset.relPath === activeLibraryRelPath) {
+      row.classList.add('is-active');
+    }
+
+    const main = document.createElement('div');
+    main.className = 'list-main';
+
+    const dot = document.createElement('span');
+    dot.className = 'list-dot';
+    main.appendChild(dot);
+
+    const textWrap = document.createElement('div');
+    textWrap.className = 'list-text';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'list-title';
+    const defaultLabel = deriveDefaultLabel(file);
+    titleEl.textContent = defaultLabel || 'Saved audio';
+    textWrap.appendChild(titleEl);
+
+    const subtitleEl = document.createElement('div');
+    subtitleEl.className = 'list-meta';
+    subtitleEl.textContent = '';
+    subtitleEl.hidden = true;
+    textWrap.appendChild(subtitleEl);
+
+    main.appendChild(textWrap);
+    row.appendChild(main);
+
+    const dateEl = document.createElement('div');
+    dateEl.className = 'list-date';
+    dateEl.textContent = formatLibraryDate(file.relPath);
+    row.appendChild(dateEl);
+
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'row-actions';
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn btn-ghost btn-ghost-danger';
+    deleteBtn.textContent = 'Delete';
+    actionsWrap.appendChild(deleteBtn);
+
+    row.appendChild(actionsWrap);
+
+    row.setAttribute('aria-label', titleEl.textContent);
+
+    let cachedMeta = null;
+    let metadataPromise = null;
+
+    const applyMetadata = (metadata) => {
+      if (!metadata) return null;
+      cachedMeta = metadata;
+      const labelFromMeta = deriveLabelFromMetadata(file, metadata);
+      if (labelFromMeta) {
+        titleEl.textContent = labelFromMeta;
+        row.setAttribute('aria-label', labelFromMeta);
+      }
+      const subtitle = deriveLibrarySubtitle(metadata, titleEl.textContent);
+      if (subtitle) {
+        subtitleEl.textContent = subtitle;
+        subtitleEl.hidden = false;
+      } else {
+        subtitleEl.textContent = '';
+        subtitleEl.hidden = true;
+      }
+      return cachedMeta;
+    };
+
+    const ensureMetadata = () => {
+      if (cachedMeta) return Promise.resolve(cachedMeta);
+      if (!metadataPromise) {
+        metadataPromise = (async () => {
+          try {
+            const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
+            const metaRes = await window.api.getSavedAudioAlignment(alignRel);
+            if (metaRes && metaRes.ok && metaRes.metadata) {
+              return applyMetadata(metaRes.metadata);
+            }
+          } catch (err) {
+            console.warn('Failed to load saved audio metadata', err);
+          }
+          return null;
+        })().then((result) => {
+          if (!result) metadataPromise = null;
+          return result;
+        });
+      }
+      return metadataPromise;
+    };
+
+    // Prefetch metadata quietly to improve perceived performance
+    ensureMetadata();
+
+    const openRow = async () => {
+      const metadata = await ensureMetadata();
+      if (!metadata) return;
+      setActiveLibraryRow(file.relPath || null);
+      await openSavedRecording(metadata, file.relPath);
+    };
+
+    row.addEventListener('click', () => {
+      openRow();
+    });
+
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openRow();
+      }
+    });
+
+    deleteBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const ok = confirm(`Delete ${file.name}?`);
+      if (!ok) return;
+      try {
+        const res = await window.api.deleteSavedAudio(file.relPath);
+        if (res && res.ok) {
+          if (activeLibraryRelPath && activeLibraryRelPath === file.relPath) {
+            setActiveLibraryRow(null);
+          }
+          await refreshSavedAudios();
+        }
+      } catch (err) {
+        console.error('Failed to delete saved audio', err);
+      }
+    });
+
+    fragment.appendChild(row);
+  });
+
+  list.appendChild(fragment);
+  container.appendChild(list);
+  setActiveLibraryRow(activeLibraryRelPath);
+}
+
+async function refreshSavedAudios({ showSkeleton = true } = {}) {
+  const status = document.getElementById('status');
+  const container = document.getElementById('savedAudios');
+  if (!container) return;
+  try {
+    if (showSkeleton && !savedAudiosLoading) {
+      renderSavedAudiosSkeleton(container);
+    }
+    savedAudiosLoading = true;
+    const res = await window.api.listSavedAudios();
+    const items = Array.isArray(res && res.items) ? res.items : [];
+    renderSavedAudiosTree(container, items);
   } catch (err) {
     console.error(err);
-    status.textContent = `Error: ${err.message}`;
+    if (status) status.textContent = `Error: ${err && err.message ? err.message : 'Library failed to load'}`;
+    renderSavedAudiosError(container, err && err.message ? err.message : '');
+  } finally {
+    savedAudiosLoading = false;
+    container.setAttribute('aria-busy', 'false');
   }
 }
 
@@ -1587,6 +1860,7 @@ async function openSavedRecording(metadata, wavRelPath) {
     const langInput = document.getElementById('lang');
 
     navigateToPreview();
+    setActiveLibraryRow(wavRelPath || null);
 
     // If saved recording came from a PDF source, attempt to re-render the PDF for preview for best highlighting
     const kind = (metadata.source_kind || '').toLowerCase();
