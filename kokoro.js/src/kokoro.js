@@ -1,5 +1,5 @@
 import { env as hf, StyleTextToSpeech2Model, AutoTokenizer, Tensor, RawAudio } from "@huggingface/transformers";
-import { phonemize } from "./phonemize.js";
+import { phonemizeDetailed } from "./phonemize.js";
 import { TextSplitterStream } from "./splitter.js";
 import { getVoiceData, VOICES } from "./voices.js";
 import fs from 'fs';
@@ -7,15 +7,82 @@ import fs from 'fs';
 const STYLE_DIM = 256;
 const SAMPLE_RATE = 24000;
 const MAGIC_DIVISOR = 80; // See python pipeline.join_timestamps
-const PUNCTUATION_CHARS = ';:,.!?¡¿—…"«»“”(){}[]';
 
-/**
- * @typedef {Object} Timestamp
- * @property {number} index Index of the token in sequence
- * @property {string} phonemes Phoneme string for this token
- * @property {number} start_ts Start time in seconds
- * @property {number} end_ts End time in seconds
- */
+class KokoroResult {
+  /**
+   * @param {{graphemes: string, phonemes: string, tokens: Array<{text: string, phonemes: string, whitespace: boolean, start_ts: number|null, end_ts: number|null}>, audio: RawAudio|null, pred_dur: number[]|null, text_index?: number}} payload
+   */
+  constructor({ graphemes, phonemes, tokens, audio, pred_dur, text_index = 0 }) {
+    this.graphemes = graphemes;
+    this.phonemes = phonemes;
+    this.tokens = tokens;
+    this._audio = audio ?? null;
+    this._pred_dur = pred_dur ?? null;
+    this.text_index = text_index;
+  }
+
+  get audio() {
+    return this._audio;
+  }
+
+  get pred_dur() {
+    return this._pred_dur;
+  }
+
+  get text() {
+    return this.graphemes;
+  }
+
+  /**
+   * Provide legacy-style timestamp view.
+   * @returns {Array<{index: number, text: string, phonemes: string, start_ts: number, end_ts: number}>}
+   */
+  get timestamps() {
+    if (!Array.isArray(this.tokens)) return [];
+    const results = [];
+    let idx = 0;
+    for (const token of this.tokens) {
+      if (token?.phonemes && token.start_ts != null && token.end_ts != null) {
+        results.push({
+          index: idx,
+          text: token.text,
+          phonemes: token.phonemes,
+          start_ts: token.start_ts,
+          end_ts: token.end_ts,
+        });
+      }
+      idx += 1;
+    }
+    return results;
+  }
+
+  *[Symbol.iterator]() {
+    yield this.graphemes;
+    yield this.phonemes;
+    yield this.audio;
+  }
+
+  /**
+   * Provide tuple-like access similar to Python's __getitem__.
+   * @param {number} index
+   * @returns {string|RawAudio|null}
+   */
+  at(index) {
+    if (index === 0) return this.graphemes;
+    if (index === 1) return this.phonemes;
+    if (index === 2) return this.audio;
+    return undefined;
+  }
+
+  toJSON() {
+    return {
+      graphemes: this.graphemes,
+      phonemes: this.phonemes,
+      tokens: this.tokens,
+      text_index: this.text_index,
+    };
+  }
+}
 
 /**
  * @typedef {Object} GenerateOptions
@@ -76,36 +143,41 @@ export class KokoroTTS {
   }
 
   /**
-   * Generate audio from text.
+   * Generate speech and alignment metadata from text, mirroring Python's KPipeline.
    *
    * @param {string} text The input text
    * @param {GenerateOptions} options Additional options
-   * @returns {Promise<RawAudio>} The generated audio
+   * @returns {Promise<KokoroResult>} The generated result with audio, phonemes, and tokens
    */
   async generate(text, { voice = "af_heart", speed = 1 } = {}) {
     const language = this._validate_voice(voice);
+    const { phonemes, tokens } = await phonemizeDetailed(text, language);
+    const { input_ids } = this.tokenizer(phonemes, { truncation: true });
+    const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
 
-    const phonemes = await phonemize(text, language);
-    const { input_ids } = this.tokenizer(phonemes, {
-      truncation: true,
+    const tokenCopies = tokens.map((token) => ({ ...token }));
+    if (pred_dur) {
+      this._join_timestamps(tokenCopies, pred_dur);
+    }
+
+    return new KokoroResult({
+      graphemes: text,
+      phonemes,
+      tokens: tokenCopies,
+      audio,
+      pred_dur,
+      text_index: 0,
     });
-
-    return this.generate_from_ids(input_ids, { voice, speed });
   }
 
   /**
-   * Generate audio and timestamps from text.
+   * Generate speech with alignment metadata (legacy helper). Returns KokoroResult.
    * @param {string} text Input text
    * @param {GenerateOptions} options Options
-   * @returns {Promise<{audio: RawAudio, phonemes: string, timestamps: Timestamp[]|null}>}
+   * @returns {Promise<KokoroResult>}
    */
   async generate_with_timestamps(text, { voice = "af_heart", speed = 1 } = {}) {
-    const language = this._validate_voice(voice);
-    const phonemes = await phonemize(text, language);
-    const { input_ids } = this.tokenizer(phonemes, { truncation: true });
-    const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
-    const timestamps = pred_dur ? this._join_timestamps_from_phonemes(phonemes, pred_dur) : null;
-    return { audio, phonemes, timestamps };
+    return this.generate(text, { voice, speed });
   }
 
   /**
@@ -120,12 +192,12 @@ export class KokoroTTS {
   }
 
   /**
-   * Generate audio from text in a streaming fashion.
+   * Generate speech from text in a streaming fashion.
    * @param {string|TextSplitterStream} text The input text
    * @param {StreamGenerateOptions} options Additional options
-   * @returns {AsyncGenerator<{text: string, phonemes: string, audio: RawAudio}, void, void>}
+   * @returns {AsyncGenerator<KokoroResult, void, void>}
    */
-  async *stream(text, { voice = "af_heart", speed = 1, split_pattern = null, return_timestamps = false } = {}) {
+  async *stream(text, { voice = "af_heart", speed = 1, split_pattern = null, return_timestamps = undefined } = {}) {
     const language = this._validate_voice(voice);
 
     /** @type {TextSplitterStream} */
@@ -144,18 +216,33 @@ export class KokoroTTS {
     } else {
       throw new Error("Invalid input type. Expected string or TextSplitterStream.");
     }
+    if (return_timestamps !== undefined) {
+      // Backwards compatibility: timestamps now available via KokoroResult.timestamps.
+    }
+    let textIndex = 0;
     for await (const sentence of splitter) {
-      const phonemes = await phonemize(sentence, language);
-      const { input_ids } = this.tokenizer(phonemes, {
-        truncation: true,
-      });
+      if (!sentence?.trim()) {
+        continue;
+      }
+      const { phonemes, tokens } = await phonemizeDetailed(sentence, language);
+      const { input_ids } = this.tokenizer(phonemes, { truncation: true });
 
       // TODO: There may be some cases where - even with splitting - the text is too long.
       // In that case, we should split the text into smaller chunks and process them separately.
       // For now, we just truncate these exceptionally long chunks
       const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
-      const timestamps = return_timestamps && pred_dur ? this._join_timestamps_from_phonemes(phonemes, pred_dur) : null;
-      yield { text: sentence, phonemes, audio, timestamps };
+      const tokenCopies = tokens.map((token) => ({ ...token }));
+      if (pred_dur) {
+        this._join_timestamps(tokenCopies, pred_dur);
+      }
+      yield new KokoroResult({
+        graphemes: sentence,
+        phonemes,
+        tokens: tokenCopies,
+        audio,
+        pred_dur,
+        text_index: textIndex++,
+      });
     }
   }
 
@@ -209,80 +296,50 @@ export class KokoroTTS {
   // we do not return timestamps and leave it to the caller to decide.
 
   /**
-   * Internal: join per-character durations into word-level timestamps based on phoneme string
-   * Mirrors python KPipeline.join_timestamps
-   * @param {string} phonemes Phoneme string passed to tokenizer
+   * Internal: mutate tokens with timestamp data using duration predictions.
+   * Mirrors python KPipeline.join_timestamps.
+   * @param {Array<{phonemes: string, whitespace: boolean, start_ts: number|null, end_ts: number|null}>} tokens
    * @param {number[]} pred_dur Duration predictions per character (+spaces) including <bos>/<eos>
-   * @returns {Timestamp[]}
+   * @returns {Array} The same token array with timestamps applied
    */
-  _join_timestamps_from_phonemes(phonemes, pred_dur) {
-    if (!phonemes || !pred_dur || pred_dur.length < 3) return [];
+  _join_timestamps(tokens, pred_dur) {
+    if (!Array.isArray(tokens) || !pred_dur || pred_dur.length < 3) return tokens;
 
-    // Tokenize phonemes by spaces, preserving consecutive spaces as separate counters
-    const tokens = [];
-    let i = 0;
-    while (i < phonemes.length) {
-      // Skip any leading spaces (treated as whitespace after previous token)
-      let j = i;
-      while (j < phonemes.length && phonemes[j] === ' ') j++;
-      if (j > i) {
-        // Leading spaces; treat as whitespace following previous token (handled implicitly by counting space durations)
-        i = j;
-        continue;
-      }
-      // Find end of non-space segment
-      j = i;
-      while (j < phonemes.length && phonemes[j] !== ' ') j++;
-      const seg = phonemes.slice(i, j);
-      // Count following single space (if any). Model typically has one space token after words
-      let spaceCount = 0;
-      let k = j;
-      while (k < phonemes.length && phonemes[k] === ' ') { spaceCount++; k++; }
-
-      tokens.push({
-        phonemes: seg,
-        // Consider tokens that are purely punctuation as having no phonemes
-        phoneme_len: seg.split('').filter(ch => !PUNCTUATION_CHARS.includes(ch)).length,
-        whitespace: spaceCount > 0,
-      });
-      i = j + spaceCount;
-    }
-
-    // Now join timestamps similar to python
-    const results = [];
-    let left = 2 * Math.max(0, pred_dur[0] - 3);
+    let left = 2 * Math.max(0, Number(pred_dur[0]) - 3);
     let right = left;
-    let p = 1; // skip <bos>
-    let idx = 0;
-    for (const t of tokens) {
-      if (p >= pred_dur.length - 1) break; // leave room for <eos>
+    let i = 1; // Skip <bos>
 
-      if (t.phoneme_len === 0) {
-        // Punctuation (no phonemes). Only advance on space.
-        if (t.whitespace && p < pred_dur.length - 1) {
-          p += 1; // move to space duration
-          left = right + pred_dur[p];
-          right = left + pred_dur[p];
-          p += 1; // advance past space
+    for (const token of tokens) {
+      const phonemeSeq = token?.phonemes ?? "";
+      if (i >= pred_dur.length - 1) break;
+
+      if (!phonemeSeq) {
+        if (token?.whitespace && i < pred_dur.length - 1) {
+          i += 1;
+          left = right + Number(pred_dur[i]);
+          right = left + Number(pred_dur[i]);
+          i += 1;
         }
-        idx++;
         continue;
       }
 
-      const end_idx = p + t.phoneme_len;
-      if (end_idx >= pred_dur.length) break;
-      const start_ts = left / MAGIC_DIVISOR;
-      let token_dur = 0;
-      for (let s = p; s < end_idx; s++) token_dur += pred_dur[s];
-      const space_dur = t.whitespace && end_idx < pred_dur.length ? pred_dur[end_idx] : 0;
-      left = right + (2 * token_dur) + space_dur;
-      const end_ts = left / MAGIC_DIVISOR;
-      right = left + space_dur;
-      results.push({ index: idx, phonemes: t.phonemes, start_ts, end_ts });
-      p = end_idx + (t.whitespace ? 1 : 0);
-      idx++;
+      const phonemeLen = Array.from(phonemeSeq).length;
+      const endIdx = i + phonemeLen;
+      if (endIdx >= pred_dur.length) break;
+
+      token.start_ts = left / MAGIC_DIVISOR;
+      let tokenDuration = 0;
+      for (let idx = i; idx < endIdx; idx++) {
+        tokenDuration += Number(pred_dur[idx]);
+      }
+      const spaceDur = token.whitespace && endIdx < pred_dur.length ? Number(pred_dur[endIdx]) : 0;
+      left = right + (2 * tokenDuration) + spaceDur;
+      token.end_ts = left / MAGIC_DIVISOR;
+      right = left + spaceDur;
+      i = endIdx + (token.whitespace ? 1 : 0);
     }
-    return results;
+
+    return tokens;
   }
 }
 
@@ -301,4 +358,4 @@ export const env = {
   },
 };
 
-export { TextSplitterStream };
+export { TextSplitterStream, KokoroResult };

@@ -165,27 +165,25 @@ const PUNCTUATION = ';:,.!?¡¿—…"«»“”(){}[]';
 const PUNCTUATION_PATTERN = new RegExp(`(\\s*[${escapeRegExp(PUNCTUATION)}]+\\s*)+`, "g");
 
 /**
- * Phonemize text using the eSpeak-NG phonemizer
- * @param {string} text The text to phonemize
- * @param {"a"|"b"} language The language to use
- * @param {boolean} norm Whether to normalize the text
- * @returns {Promise<string>} The phonemized text
+ * @typedef {Object} PhonemeToken
+ * @property {string} text Original token text (word or punctuation)
+ * @property {string} phonemes Phoneme sequence for this token (empty for punctuation)
+ * @property {boolean} whitespace Whether the original token was followed by whitespace
+ * @property {number | null} [start_ts] Start timestamp in seconds (filled later)
+ * @property {number | null} [end_ts] End timestamp in seconds (filled later)
+ * @property {"word"|"punctuation"} [type] Internal token type
+ * @property {string} [leadingWhitespace] Internal: whitespace preceding this token
+ * @property {string} [trailingWhitespace] Internal: whitespace following this token
  */
-export async function phonemize(text, language = "a", norm = true) {
-  // 1. Normalize text
-  if (norm) {
-    text = normalize_text(text);
-  }
 
-  // 2. Split into chunks, to ensure we preserve punctuation
-  const sections = split(text, PUNCTUATION_PATTERN);
-
-  // 3. Convert each section to phonemes
-  const lang = language === "a" ? "en-us" : "en";
-  const ps = (await Promise.all(sections.map(async ({ match, text }) => (match ? text : (await espeakng(text, lang)).join(" "))))).join("");
-
-  // 4. Post-process phonemes
-  let processed = ps
+/**
+ * Apply per-token phoneme post-processing to align with Python pipeline.
+ * @param {string} phonemes
+ * @param {"a"|"b"} language
+ * @returns {string}
+ */
+function postProcessPhonemes(phonemes, language) {
+  let processed = phonemes
     // https://en.wiktionary.org/wiki/kokoro#English
     .replace(/kəkˈoːɹoʊ/g, "kˈoʊkəɹoʊ")
     .replace(/kəkˈɔːɹəʊ/g, "kˈəʊkəɹəʊ")
@@ -195,10 +193,301 @@ export async function phonemize(text, language = "a", norm = true) {
     .replace(/ɬ/g, "l")
     .replace(/(?<=[a-zɹː])(?=hˈʌndɹɪd)/g, " ")
     .replace(/ z(?=[;:,.!?¡¿—…"«»“” ]|$)/g, "z");
-
-  // 5. Additional post-processing for American English
   if (language === "a") {
     processed = processed.replace(/(?<=nˈaɪn)ti(?!ː)/g, "di");
   }
-  return processed.trim();
+  return processed;
+}
+
+/**
+ * Build word tokens (non-punctuation) for phonemization.
+ * @param {string} text Section text without punctuation
+ * @param {"en-us"|"en"} lang
+ * @returns {Promise<PhonemeToken[]>}
+ */
+function extractWordSegments(text) {
+  const segments = [];
+  const matcher = /\S+/g;
+  let match;
+  while ((match = matcher.exec(text)) !== null) {
+    segments.push(match[0]);
+  }
+  return segments;
+}
+
+function segmentPhonemeString(raw, expectedCount) {
+  const segments = [];
+  let cursor = 0;
+  for (let i = 0; i < expectedCount; i++) {
+    while (cursor < raw.length && raw[cursor] === " ") cursor++;
+    let phoneme = "";
+    while (cursor < raw.length && raw[cursor] !== " ") {
+      phoneme += raw[cursor++];
+    }
+    let whitespace = "";
+    while (cursor < raw.length && raw[cursor] === " ") {
+      if (i < expectedCount - 1) {
+        whitespace += raw[cursor++];
+      } else {
+        break;
+      }
+    }
+    segments.push({ phoneme, whitespace });
+  }
+  const remainder = raw.slice(cursor);
+  return { segments, remainder };
+}
+
+async function buildWordTokens(text, lang) {
+  const words = extractWordSegments(text);
+  if (!words.length) {
+    return { tokens: [], raw: "" };
+  }
+
+  const rawOutputs = await espeakng(text, lang);
+  const raw = rawOutputs.join(" ");
+  const { segments, remainder } = segmentPhonemeString(raw, words.length);
+
+  const tokens = words.map((word, index) => {
+    const seg = segments[index] ?? { phoneme: "", whitespace: "" };
+    return {
+      type: "word",
+      text: word,
+      phonemes: seg.phoneme,
+      whitespace: seg.whitespace.length > 0,
+      leadingWhitespace: "",
+      trailingWhitespace: seg.whitespace,
+      start_ts: null,
+      end_ts: null,
+    };
+  });
+
+  if (remainder) {
+    const last = tokens.at(-1);
+    if (last) {
+      last.phonemes += remainder;
+      const trailingMatch = last.phonemes.match(/ +$/);
+      if (trailingMatch) {
+        last.trailingWhitespace += trailingMatch[0];
+        last.phonemes = last.phonemes.slice(0, -trailingMatch[0].length);
+        last.whitespace = true;
+      }
+    }
+  }
+
+  return { tokens, raw };
+}
+
+/**
+ * Build punctuation tokens from a punctuation section.
+ * @param {string} text Section containing punctuation (and optional whitespace)
+ * @returns {PhonemeToken[]}
+ */
+function buildPunctuationTokens(text) {
+  const tokens = [];
+  const length = text.length;
+  let cursor = 0;
+
+  while (cursor < length) {
+    let leadingWhitespace = "";
+    while (cursor < length && /\s/.test(text[cursor])) {
+      leadingWhitespace += text[cursor++];
+    }
+    if (cursor >= length) {
+      if (leadingWhitespace && tokens.length) {
+        tokens[tokens.length - 1].trailingWhitespace += leadingWhitespace;
+        tokens[tokens.length - 1].whitespace = tokens[tokens.length - 1].trailingWhitespace.length > 0;
+      }
+      break;
+    }
+
+    let punct = "";
+    while (cursor < length && !/\s/.test(text[cursor])) {
+      punct += text[cursor++];
+    }
+
+    let trailingWhitespace = "";
+    while (cursor < length && /\s/.test(text[cursor])) {
+      trailingWhitespace += text[cursor++];
+    }
+
+    tokens.push({
+      type: "punctuation",
+      text: punct,
+      phonemes: "",
+      whitespace: trailingWhitespace.length > 0,
+      leadingWhitespace,
+      trailingWhitespace,
+      start_ts: null,
+      end_ts: null,
+    });
+  }
+
+  return tokens;
+}
+
+/**
+ * Remove a given number of leading spaces from the token sequence.
+ * This keeps phoneme strings and whitespace metadata in sync when trimming.
+ * @param {PhonemeToken[]} tokens
+ * @param {number} count
+ */
+function consumeLeadingSpaces(tokens, count) {
+  let remaining = count;
+  for (const token of tokens) {
+    if (remaining <= 0) break;
+    if (token.leadingWhitespace) {
+      const removal = Math.min(token.leadingWhitespace.length, remaining);
+      token.leadingWhitespace = token.leadingWhitespace.slice(removal);
+      remaining -= removal;
+    }
+    if (remaining <= 0) break;
+    if (token.phonemes) {
+      const match = token.phonemes.match(/^ +/);
+      if (match) {
+        const removal = Math.min(match[0].length, remaining);
+        token.phonemes = token.phonemes.slice(removal);
+        remaining -= removal;
+      }
+    }
+    if (remaining <= 0) break;
+    if (token.trailingWhitespace) {
+      const removal = Math.min(token.trailingWhitespace.length, remaining);
+      token.trailingWhitespace = token.trailingWhitespace.slice(removal);
+      token.whitespace = token.trailingWhitespace.length > 0;
+      remaining -= removal;
+    }
+  }
+}
+
+/**
+ * Remove a given number of trailing spaces from the token sequence.
+ * @param {PhonemeToken[]} tokens
+ * @param {number} count
+ */
+function consumeTrailingSpaces(tokens, count) {
+  let remaining = count;
+  for (let idx = tokens.length - 1; idx >= 0 && remaining > 0; idx--) {
+    const token = tokens[idx];
+
+    if (token.trailingWhitespace) {
+      const removal = Math.min(token.trailingWhitespace.length, remaining);
+      token.trailingWhitespace = token.trailingWhitespace.slice(0, token.trailingWhitespace.length - removal);
+      token.whitespace = token.trailingWhitespace.length > 0;
+      remaining -= removal;
+    }
+    if (remaining <= 0) break;
+
+    if (token.phonemes) {
+      const match = token.phonemes.match(/ +$/);
+      if (match) {
+        const removal = Math.min(match[0].length, remaining);
+        token.phonemes = token.phonemes.slice(0, token.phonemes.length - removal);
+        remaining -= removal;
+      }
+    }
+    if (remaining <= 0) break;
+
+    if (token.leadingWhitespace) {
+      const removal = Math.min(token.leadingWhitespace.length, remaining);
+      token.leadingWhitespace = token.leadingWhitespace.slice(0, token.leadingWhitespace.length - removal);
+      remaining -= removal;
+    }
+  }
+}
+
+/**
+ * Reconstruct phoneme string from token metadata.
+ * @param {PhonemeToken[]} tokens
+ * @returns {string}
+ */
+function buildPhonemeString(tokens) {
+  let builder = "";
+  for (const token of tokens) {
+    if (token.leadingWhitespace) {
+      builder += token.leadingWhitespace;
+    }
+    builder += token.type === "punctuation" ? token.text : token.phonemes;
+    if (token.trailingWhitespace) {
+      builder += token.trailingWhitespace;
+    } else if (token.whitespace && token.type !== "punctuation") {
+      builder += " ";
+    }
+  }
+  return builder;
+}
+
+/**
+ * Phonemize text and return both the phoneme string and token metadata.
+ * @param {string} text The text to phonemize
+ * @param {"a"|"b"} language Language key ("a" → American English, "b" → British English)
+ * @param {boolean} norm Whether to normalize the text prior to phonemization
+ * @returns {Promise<{phonemes: string, tokens: PhonemeToken[]}>}
+ */
+export async function phonemizeDetailed(text, language = "a", norm = true) {
+  if (norm) {
+    text = normalize_text(text);
+  }
+
+  const sections = split(text, PUNCTUATION_PATTERN);
+  const lang = language === "a" ? "en-us" : "en";
+  const tokens = [];
+  const rawPieces = [];
+
+  for (const section of sections) {
+    if (section.match) {
+      rawPieces.push(section.text);
+      tokens.push(...buildPunctuationTokens(section.text));
+    } else {
+      const { tokens: wordTokens, raw } = await buildWordTokens(section.text, lang);
+      rawPieces.push(raw);
+      tokens.push(...wordTokens);
+    }
+  }
+
+  const rawPhonemeString = rawPieces.join("");
+  const processedString = postProcessPhonemes(rawPhonemeString, language);
+
+  tokens.forEach((token) => {
+    if (token.phonemes) {
+      token.phonemes = postProcessPhonemes(token.phonemes, language);
+    }
+  });
+
+  const trimmedStart = processedString.length - processedString.trimStart().length;
+  const trimmedEnd = processedString.length - processedString.trimEnd().length;
+
+  if (trimmedStart > 0) {
+    consumeLeadingSpaces(tokens, trimmedStart);
+  }
+  if (trimmedEnd > 0) {
+    consumeTrailingSpaces(tokens, trimmedEnd);
+  }
+
+  const phonemeString = buildPhonemeString(tokens).trim();
+
+  const publicTokens = tokens.map((token) => ({
+    text: token.text,
+    phonemes: token.phonemes,
+    whitespace: (token.trailingWhitespace ?? "").length > 0,
+    start_ts: token.start_ts,
+    end_ts: token.end_ts,
+  }));
+
+  return {
+    phonemes: phonemeString,
+    tokens: publicTokens,
+  };
+}
+
+/**
+ * Phonemize text using the eSpeak-NG phonemizer (string-only helper)
+ * @param {string} text The text to phonemize
+ * @param {"a"|"b"} language The language to use
+ * @param {boolean} norm Whether to normalize the text
+ * @returns {Promise<string>} The phonemized text
+ */
+export async function phonemize(text, language = "a", norm = true) {
+  const { phonemes } = await phonemizeDetailed(text, language, norm);
+  return phonemes;
 }

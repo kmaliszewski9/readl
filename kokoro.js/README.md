@@ -30,11 +30,18 @@ const tts = await KokoroTTS.from_pretrained(model_id, {
 });
 
 const text = "Life is like a box of chocolates. You never know what you're gonna get.";
-const audio = await tts.generate(text, {
+const result = await tts.generate(text, {
   // Use `tts.list_voices()` to list all available voices
   voice: "af_heart",
 });
-audio.save("audio.wav");
+console.log(result.phonemes);
+result.audio.save("audio.wav");
+// Optional: alignment tokens with timestamps (if durations are available)
+for (const token of result.tokens ?? []) {
+  if (token.start_ts != null && token.end_ts != null) {
+    console.log(`${token.text ?? token.phonemes}: ${token.start_ts.toFixed(2)}s – ${token.end_ts.toFixed(2)}s`);
+  }
+}
 ```
 
 Or if you'd prefer to stream the output, you can do that with:
@@ -53,9 +60,9 @@ const splitter = new TextSplitterStream();
 const stream = tts.stream(splitter);
 (async () => {
   let i = 0;
-  for await (const { text, phonemes, audio } of stream) {
-    console.log({ text, phonemes });
-    audio.save(`audio-${i++}.wav`);
+  for await (const chunk of stream) {
+    console.log({ text: chunk.graphemes, phonemes: chunk.phonemes });
+    chunk.audio.save(`audio-${i++}.wav`);
   }
 })();
 
@@ -84,22 +91,22 @@ import { KokoroTTS } from "kokoro-js";
 const model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const tts = await KokoroTTS.from_pretrained(model_id, { dtype: "q8", device: "wasm" });
 
-const { audio, phonemes, timestamps } = await tts.generate_with_timestamps(
+const result = await tts.generate_with_timestamps(
   "Life is like a box of chocolates.",
   { voice: "af_heart" }
 );
 
-console.log(phonemes);
-console.table(timestamps); // [{ index, phonemes, start_ts, end_ts }, ...]
-audio.save("out.wav");
+console.log(result.phonemes);
+console.table(result.timestamps); // [{ index, text, phonemes, start_ts, end_ts }, ...]
+result.audio.save("out.wav");
 
 // Streaming variant
-for await (const { text, phonemes, audio, timestamps } of tts.stream(
+for await (const chunk of tts.stream(
   "You never know what you're gonna get.",
-  { voice: "af_heart", return_timestamps: true }
+  { voice: "af_heart" }
 )) {
-  console.log({ text, phonemes });
-  console.table(timestamps);
+  console.log({ text: chunk.graphemes, phonemes: chunk.phonemes });
+  console.table(chunk.timestamps);
 }
 ```
 ```
