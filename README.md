@@ -1,6 +1,6 @@
 # Readl — Kokoro TTS Desktop
 
-Electron app + Python FastAPI service to synthesize speech locally using Kokoro-82M.
+Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js Node runtime (ONNX on CPU). Everything runs inside the Electron main process—no separate Python service required.
 
 - Paste plain text or a URL (auto-fetches website and shows preview)
 - Pick voice, language, and speed
@@ -12,120 +12,31 @@ Electron app + Python FastAPI service to synthesize speech locally using Kokoro-
 ## Prerequisites
 
 - macOS (Apple Silicon supported)
-- Python 3.9+
 - Node.js 18+
-- Recommended: install espeak-ng for some languages/fallback:
+- Optional: set `READL_AUDIO_DIR="/absolute/path/to/audios"` before launching to control where synthesized WAVs and alignment sidecars are stored (defaults to `<repo>/audios`).
+
+The first synthesis downloads the Kokoro ONNX weights from Hugging Face (roughly 300 MB) and caches them under `.kokoro-cache` in the repo root.
+
+## Setup
+
+Install dependencies for the local Kokoro.js package and the Electron app:
 
 ```bash
-brew install espeak-ng
+cd kokoro.js
+npm install
+
+cd ../electron-app
+npm install
 ```
 
-Apple Silicon GPU acceleration (optional):
+You only need to run the installs once (or whenever `package.json` changes).
 
-```bash
-export PYTORCH_ENABLE_MPS_FALLBACK=1
-```
-
-Shared audio directory (optional, recommended):
-
-```bash
-# Directory where synthesized WAVs and alignment sidecars are stored
-export READL_AUDIO_DIR="/absolute/path/to/audios"
-```
-
-## 1) Start the Python TTS service
-
-```bash
-cd python_service
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-uvicorn app:app --host 127.0.0.1 --port 8000 --reload
-```
-
-- Health check: http://127.0.0.1:8000/health
-- API docs: http://127.0.0.1:8000/docs
-
-### Language notes
-
-The service is configured with `misaki[en]`. For additional languages, install the corresponding extras in the same venv:
-
-```bash
-# Examples
-pip install 'misaki[ja]'   # Japanese
-pip install 'misaki[zh]'   # Mandarin Chinese
-```
-
-### WebSocket Synthesis API (synchronous segments)
-
-The service exposes a WebSocket endpoint for non-blocking text-to-speech generation with per-segment notifications, cancellation, and clear failure reporting. Segment generation is synchronous (GPU-friendly) and events are emitted in order.
-
-- Endpoint: `ws://127.0.0.1:8000/ws/synthesize`
-
-Messages (JSON):
-
-- start: `{ "type": "start", "request": { text, voice, speed, lang_code, split_pattern, preview_html, source_kind, source_url, raw_content, raw_content_type, title } }`
-- started: `{ "type": "started", "job_id": "...", "total_segments": 10 }` (total_segments optional; present when pre-count succeeds)
-- segment: `{ "type": "segment", "job_id": "...", "index": 0, "offset_seconds": 0.0, "duration_seconds": 1.23, "progress": 0.42 }` (progress 0..1 when total known)
-- complete: `{ "type": "complete", "job_id": "...", "ok": true, "wav_rel_path": "...", "align_rel_path": "...", "sample_rate": 24000, "duration_seconds": 12.34, "segment_count": 10, "progress": 1.0 }`
-- cancelled: `{ "type": "cancelled", "job_id": "...", "reason": "client_request|client_disconnected" }`
-- error: `{ "type": "error", "job_id": "...", "message": "..." }`
-- cancel (client→server): `{ "type": "cancel", "job_id": "..." }`
-
-```json
-{
-  "ok": true,
-  "root_dir": "/path/to/audios",
-  "wav_rel_path": "2025-10-02/182409399_af_heart_a_hello-world.wav",
-  "align_rel_path": "2025-10-02/182409399_af_heart_a_hello-world.align.ndjson",
-  "sample_rate": 24000,
-  "duration_seconds": 1.23,
-  "voice": "af_heart",
-  "speed": 1.0,
-  "lang_code": "a",
-  "text": "Hello world"
-}
-```
-
-#### Sidecar alignment (.align.ndjson)
-
-The service writes an NDJSON sidecar next to each WAV. It contains a header line followed by one line per segment.
-
-Header line (first line):
-
-```json
-{"type":"header","version":1,"created_at":"2025-10-04T13:14:49","sample_rate":24000,"duration_seconds":3.21,"wav_rel_path":"2025-10-04/131449419_af_heart_a_hello-world.wav","voice":"af_heart","speed":1.0,"lang_code":"a","split_pattern":"\\n+","text":"Hello world","preview_html":"<p>Hello…</p>","source_kind":"url","source_url":"https://example.com","raw_content":"…","raw_content_type":"text/html","title":"Example","has_token_timestamps":true}
-```
-
-Segment line (subsequent lines):
-
-```json
-{"type":"segment","text_index":0,"offset_seconds":0.0,"duration_seconds":1.23,"has_token_timestamps":true,"tokens":[{"index":0,"text":"Hello","start_ts":0.12,"end_ts":0.48},{"index":1,"text":"world","start_ts":0.62,"end_ts":1.18}]}
-```
-
-- Token timestamps are in seconds and typically segment-relative; the app computes absolute times using `offset_seconds + start_ts`.
-- When timestamps are not available, `has_token_timestamps` is false; tokens may still be present without `start_ts`/`end_ts`.
-
-Language codes (Kokoro):
-
-- `a`: English (US)
-- `b`: English (UK)
-- `e`: Spanish
-- `f`: French
-- `h`: Hindi
-- `i`: Italian
-- `j`: Japanese (requires `misaki[ja]`)
-- `p`: Portuguese (BR)
-- `z`: Mandarin (requires `misaki[zh]`)
-
-## 2) Start the Electron app
+## Run the Electron app
 
 In a separate terminal:
 
 ```bash
 cd electron-app
-npm install
 npm start
 ```
 
@@ -143,13 +54,44 @@ Notes:
   - For PDF files/URLs, the app renders with PDF.js using a real text layer (selectable `<span>` text). The TTS text is derived from the same PDF.js `getTextContent()` output to minimize mismatches with the text layer.
   - The existing highlighting pipeline is reused for PDFs: we rebuild the preview text-node index when the PDF text layer renders, and when view changes (zoom/rotation). Tokens are mapped to DOM Ranges and painted via the CSS Highlight API.
   
-The app connects to the local Python service at `ws://127.0.0.1:8000/ws/synthesize`. The service saves audio to disk on completion; the app plays the file directly from disk and loads alignment from the sidecar NDJSON.
+The Electron main process calls Kokoro.js directly, streams the generated PCM in memory, and writes a WAV plus `.align.ndjson` sidecar into the shared audio directory. When synthesis completes the renderer plays the saved file from disk and loads alignment metadata for highlighting.
+
+## Alignment sidecars (`.align.ndjson`)
+
+Each synthesis produces an NDJSON sidecar next to the WAV. The first line is a header and every subsequent line represents a segment:
+
+Header line:
+
+```json
+{"type":"header","version":1,"created_at":"2025-10-04T13:14:49","sample_rate":24000,"duration_seconds":3.21,"wav_rel_path":"2025-10-04/131449419_af_heart_a_hello-world.wav","voice":"af_heart","speed":1.0,"lang_code":"a","split_pattern":"\\n+","text":"Hello world","preview_html":"<p>Hello…</p>","source_kind":"url","source_url":"https://example.com","raw_content":"…","raw_content_type":"text/html","title":"Example","has_token_timestamps":true}
+```
+
+Segment line:
+
+```json
+{"type":"segment","text_index":0,"offset_seconds":0.0,"duration_seconds":1.23,"has_token_timestamps":true,"tokens":[{"index":0,"text":"Hello","start_ts":0.12,"end_ts":0.48},{"index":1,"text":"world","start_ts":0.62,"end_ts":1.18}]}
+```
+
+- Token timestamps are in seconds and typically segment-relative; the app computes absolute times using `offset_seconds + start_ts`.
+- When timestamps are not available, `has_token_timestamps` is false; tokens may still be present without `start_ts`/`end_ts`.
+
+### Language codes (Kokoro)
+
+- `a`: English (US)
+- `b`: English (UK)
+- `e`: Spanish
+- `f`: French
+- `h`: Hindi
+- `i`: Italian
+- `j`: Japanese
+- `p`: Portuguese (BR)
+- `z`: Mandarin
 
 ## Troubleshooting
 
-- If synthesis fails, ensure the Python service is running and espeak-ng is installed.
-- For Japanese/Mandarin, install the `misaki` extras mentioned above.
-- On Apple Silicon, try enabling `PYTORCH_ENABLE_MPS_FALLBACK=1` before starting the service.
+- First run can take a while while Kokoro weights download; watch the Electron console for progress.
+- If synthesis fails immediately, ensure the Kokoro.js dependencies are installed (`cd kokoro.js && npm install`) and that Hugging Face downloads are not blocked by a firewall.
+- Set `READL_AUDIO_DIR` to a writable path if the default `audios/` directory is not desirable.
 
 ## Reference
 

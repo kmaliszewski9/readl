@@ -457,8 +457,9 @@ async function getVoiceFile(id) {
   if (fs && Object.hasOwn(fs, 'readFile')) {
     const dirname = typeof __dirname !== "undefined" ? __dirname : import.meta.dirname;
     const file = path.resolve(dirname, `../voices/${id}.bin`);
-    const { buffer } = await fs.readFile(file);
-    return buffer;
+    const buf = await fs.readFile(file);
+    // Return an ArrayBuffer that exactly spans the file contents
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   }
 
   const url = `${voiceDataUrl}/${id}.bin`;

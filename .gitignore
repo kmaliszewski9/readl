@@ -1,2 +1,4 @@
 audios
+.kokoro-cache
+__pycache__
 
