@@ -7,6 +7,147 @@ import fs from 'fs';
 const STYLE_DIM = 256;
 const SAMPLE_RATE = 24000;
 const MAGIC_DIVISOR = 80; // See python pipeline.join_timestamps
+const MAX_PHONEME_COUNT = 510;
+const WATERFALL_BREAKS = ['!.?…', ':;', ',—'];
+const WATERFALL_BUMPS = new Set([')', '”']);
+
+const tokenSymbol = (token) => {
+  if (!token) return "";
+  if (token.phonemes && token.phonemes.length > 0) {
+    return token.phonemes.length === 1 ? token.phonemes : "";
+  }
+  return token.text && token.text.length === 1 ? token.text : "";
+};
+
+const phonemeOrText = (token) => {
+  if (!token) return "";
+  if (token.phonemes && token.phonemes.length > 0) {
+    return token.phonemes;
+  }
+  return token.text ?? "";
+};
+
+const tokensToPhonemeString = (tokens) =>
+  tokens
+    .map((token) => `${phonemeOrText(token)}${token?.whitespace ? " " : ""}`)
+    .join("")
+    .trim();
+
+const tokensToTextString = (tokens) =>
+  tokens
+    .map((token) => `${token?.text ?? ""}${token?.whitespace ? " " : ""}`)
+    .join("")
+    .trim();
+
+const getChunkDurationSeconds = (tokens) => {
+  let duration = 0;
+  for (const token of tokens) {
+    if (token?.end_ts != null && token.end_ts > duration) {
+      duration = token.end_ts;
+    }
+  }
+  return duration;
+};
+
+const offsetTokenTimestamps = (tokens, offsetSeconds) => {
+  if (!offsetSeconds) return;
+  for (const token of tokens) {
+    if (token?.start_ts != null) {
+      token.start_ts += offsetSeconds;
+    }
+    if (token?.end_ts != null) {
+      token.end_ts += offsetSeconds;
+    }
+  }
+};
+
+const waterfallLastIndex = (tokens, nextCount, maxCount = MAX_PHONEME_COUNT) => {
+  for (const group of WATERFALL_BREAKS) {
+    const symbols = new Set(Array.from(group));
+    let idx = -1;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const symbol = tokenSymbol(tokens[i]);
+      if (symbol && symbols.has(symbol)) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) continue;
+    let z = idx + 1;
+    if (z < tokens.length) {
+      const bumpSymbol = tokenSymbol(tokens[z]);
+      if (bumpSymbol && WATERFALL_BUMPS.has(bumpSymbol)) {
+        z += 1;
+      }
+    }
+    const leftCount = tokensToPhonemeString(tokens.slice(0, z)).length;
+    if (nextCount - leftCount <= maxCount) {
+      return z;
+    }
+  }
+  return tokens.length;
+};
+
+const chunkEnglishTokens = (tokens, maxCount = MAX_PHONEME_COUNT) => {
+  if (!Array.isArray(tokens) || tokens.length === 0) {
+    return [];
+  }
+  const chunks = [];
+  let buffer = [];
+  let pcount = 0;
+
+  for (const token of tokens) {
+    let nextPs = `${token?.phonemes ?? ""}${token?.whitespace ? " " : ""}`;
+    const nextCount = pcount + nextPs.trimEnd().length;
+    if (nextCount > maxCount && buffer.length > 0) {
+      let sliceIndex = waterfallLastIndex(buffer, nextCount, maxCount);
+      if (sliceIndex === 0) {
+        sliceIndex = buffer.length;
+      }
+      const chunkTokens = buffer.slice(0, sliceIndex);
+      chunks.push({
+        tokens: chunkTokens,
+        phonemes: tokensToPhonemeString(chunkTokens),
+        text: tokensToTextString(chunkTokens),
+      });
+      buffer = buffer.slice(sliceIndex);
+      pcount = tokensToPhonemeString(buffer).length;
+      if (buffer.length === 0) {
+        nextPs = nextPs.trimStart();
+      }
+    }
+    buffer.push(token);
+    pcount += nextPs.length;
+  }
+
+  if (buffer.length > 0) {
+    chunks.push({
+      tokens: buffer.slice(),
+      phonemes: tokensToPhonemeString(buffer),
+      text: tokensToTextString(buffer),
+    });
+  }
+
+  return chunks;
+};
+
+const concatAudioSegments = (audios) => {
+  const valid = audios.filter((audio) => audio);
+  if (valid.length === 0) {
+    return null;
+  }
+  if (valid.length === 1) {
+    return valid[0];
+  }
+  const total = valid.reduce((sum, audio) => sum + audio.audio.length, 0);
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const audio of valid) {
+    merged.set(audio.audio, offset);
+    offset += audio.audio.length;
+  }
+  return new RawAudio(merged, SAMPLE_RATE);
+};
 
 class KokoroResult {
   /**
@@ -152,20 +293,43 @@ export class KokoroTTS {
   async generate(text, { voice = "af_heart", speed = 1 } = {}) {
     const language = this._validate_voice(voice);
     const { phonemes, tokens } = await phonemizeDetailed(text, language);
-    const { input_ids } = this.tokenizer(phonemes, { truncation: true });
-    const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
 
     const tokenCopies = tokens.map((token) => ({ ...token }));
-    if (pred_dur) {
-      this._join_timestamps(tokenCopies, pred_dur);
+    const chunks = chunkEnglishTokens(tokenCopies);
+    const synthesisPlan = chunks.length
+      ? chunks
+      : [{ tokens: tokenCopies, phonemes, text: text.trim() }];
+
+    const audioSegments = [];
+    let combinedPredDur = null;
+    let offsetSeconds = 0;
+
+    for (const chunk of synthesisPlan) {
+      if (!chunk.phonemes) {
+        continue;
+      }
+      const { input_ids } = this.tokenizer(chunk.phonemes, { truncation: true });
+      const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
+      audioSegments.push(audio);
+      if (pred_dur) {
+        this._join_timestamps(chunk.tokens, pred_dur);
+        const chunkDuration = getChunkDurationSeconds(chunk.tokens);
+        offsetTokenTimestamps(chunk.tokens, offsetSeconds);
+        offsetSeconds += chunkDuration;
+        if (synthesisPlan.length === 1) {
+          combinedPredDur = pred_dur;
+        }
+      }
     }
+
+    const mergedAudio = concatAudioSegments(audioSegments);
 
     return new KokoroResult({
       graphemes: text,
       phonemes,
       tokens: tokenCopies,
-      audio,
-      pred_dur,
+      audio: mergedAudio,
+      pred_dur: combinedPredDur,
       text_index: 0,
     });
   }
@@ -225,24 +389,31 @@ export class KokoroTTS {
         continue;
       }
       const { phonemes, tokens } = await phonemizeDetailed(sentence, language);
-      const { input_ids } = this.tokenizer(phonemes, { truncation: true });
-
-      // TODO: There may be some cases where - even with splitting - the text is too long.
-      // In that case, we should split the text into smaller chunks and process them separately.
-      // For now, we just truncate these exceptionally long chunks
-      const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
       const tokenCopies = tokens.map((token) => ({ ...token }));
-      if (pred_dur) {
-        this._join_timestamps(tokenCopies, pred_dur);
+      const chunks = chunkEnglishTokens(tokenCopies);
+      const synthesisPlan = chunks.length
+        ? chunks
+        : [{ tokens: tokenCopies, phonemes, text: sentence.trim() }];
+
+      for (const chunk of synthesisPlan) {
+        if (!chunk.phonemes) {
+          continue;
+        }
+        const { input_ids } = this.tokenizer(chunk.phonemes, { truncation: true });
+        const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
+        if (pred_dur) {
+          this._join_timestamps(chunk.tokens, pred_dur);
+        }
+        yield new KokoroResult({
+          graphemes: chunk.text || sentence,
+          phonemes: chunk.phonemes,
+          tokens: chunk.tokens.map((token) => ({ ...token })),
+          audio,
+          pred_dur,
+          text_index: textIndex,
+        });
       }
-      yield new KokoroResult({
-        graphemes: sentence,
-        phonemes,
-        tokens: tokenCopies,
-        audio,
-        pred_dur,
-        text_index: textIndex++,
-      });
+      textIndex += 1;
     }
   }
 
