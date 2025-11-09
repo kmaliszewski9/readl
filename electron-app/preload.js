@@ -23,7 +23,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   getSavedAudioAlignment: async (relPath) => {
     return await ipcRenderer.invoke('audios-read-align', relPath);
+  },
+  synthesize: async (request) => {
+    return await ipcRenderer.invoke('kokoro-synthesize', request);
   }
 });
-
 

@@ -1,6 +1,5 @@
 let audioElement;
 let lastOpenedFilePath = null;
-let lastLoadedUrl = null;
 let currentSourceKind = null; // 'url' | 'file' | 'text'
 let currentSourceUrl = null;
 let currentRawContent = null;
@@ -31,16 +30,12 @@ let optionsDrawer = null;
 let optionsBackdrop = null;
 let speedValueLabel = null;
 let isGenerating = false;
-let activeSynthesis = null;
 let optionsDrawerOpen = false;
 let currentOptions = {
   voice: 'af_heart',
   lang: 'a',
   speed: 1
 };
-let isCancelling = false;
-// Gate status updates from stop button when we're cancelling synthesis mid-flight.
-let suppressNextStopStatus = false;
 const TOKEN_HIGHLIGHT_EPSILON = 0.03;
 const RELATIVE_TIME_FUZZ = 0.05;
 const HIGHLIGHT_API_AVAILABLE = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
@@ -127,12 +122,11 @@ function normalizeStringForMatch(str) {
 function flattenAlignmentSegments(segments) {
   const flattened = [];
   if (!Array.isArray(segments) || !segments.length) return flattened;
+  const timestampMode = detectTokenTimestampMode(segments);
+  const tokensAlreadyAbsolute = timestampMode === 'absolute';
   segments.forEach((segment, segmentIndex) => {
     const hasSegmentOffset = typeof segment?.offset_seconds === 'number' && Number.isFinite(segment.offset_seconds);
     const segmentOffset = hasSegmentOffset ? segment.offset_seconds : 0;
-    const segmentDuration = typeof segment?.duration_seconds === 'number' && Number.isFinite(segment.duration_seconds)
-      ? segment.duration_seconds
-      : null;
     const tokens = Array.isArray(segment && segment.tokens) ? segment.tokens : [];
     tokens.forEach((token, tokenIndex) => {
       if (!token || typeof token.text !== 'string') return;
@@ -143,20 +137,13 @@ function flattenAlignmentSegments(segments) {
       let end = rawEnd;
 
       if (rawStart !== null) {
-        // When timestamps are segment-relative (common), add the parent offset so playback stays monotonic.
-        const treatAsRelative = segmentDuration !== null
-          ? rawStart <= segmentDuration + RELATIVE_TIME_FUZZ
-          : (hasSegmentOffset && rawStart < segmentOffset + RELATIVE_TIME_FUZZ);
-        if (hasSegmentOffset && treatAsRelative) {
+        if (hasSegmentOffset && !tokensAlreadyAbsolute) {
           start = rawStart + segmentOffset;
         }
       }
 
       if (rawEnd !== null) {
-        const treatAsRelativeEnd = segmentDuration !== null
-          ? rawEnd <= segmentDuration + RELATIVE_TIME_FUZZ
-          : (hasSegmentOffset && rawEnd < segmentOffset + RELATIVE_TIME_FUZZ);
-        if (hasSegmentOffset && treatAsRelativeEnd) {
+        if (hasSegmentOffset && !tokensAlreadyAbsolute) {
           end = rawEnd + segmentOffset;
         }
       }
@@ -173,6 +160,34 @@ function flattenAlignmentSegments(segments) {
     });
   });
   return flattened;
+}
+
+function detectTokenTimestampMode(segments) {
+  if (!Array.isArray(segments) || !segments.length) {
+    return 'unknown';
+  }
+  let sawTimestamp = false;
+  let lastTs = -Infinity;
+  for (const segment of segments) {
+    const tokens = Array.isArray(segment && segment.tokens) ? segment.tokens : [];
+    for (const token of tokens) {
+      let ts = null;
+      if (typeof token?.start_ts === 'number' && Number.isFinite(token.start_ts)) {
+        ts = token.start_ts;
+      } else if (typeof token?.end_ts === 'number' && Number.isFinite(token.end_ts)) {
+        ts = token.end_ts;
+      }
+      if (ts === null) continue;
+      sawTimestamp = true;
+      if (ts + RELATIVE_TIME_FUZZ < lastTs) {
+        return 'relative';
+      }
+      if (ts > lastTs) {
+        lastTs = ts;
+      }
+    }
+  }
+  return sawTimestamp ? 'absolute' : 'unknown';
 }
 
 function resetAlignmentState() {
@@ -559,15 +574,7 @@ function isPreviewScreenActive() {
 function updateGenerateAvailability(forcePreview) {
   if (!generateBtn) return;
   const onPreview = typeof forcePreview === 'boolean' ? forcePreview : isPreviewScreenActive();
-  if (isCancelling) {
-    generateBtn.disabled = true;
-    return;
-  }
-  if (isGenerating) {
-    generateBtn.disabled = false;
-  } else {
-    generateBtn.disabled = !onPreview;
-  }
+  generateBtn.disabled = isGenerating || !onPreview;
 }
 
 function updateShellForScreen(screenId) {
@@ -579,18 +586,30 @@ function updateShellForScreen(screenId) {
 
 function setGeneratingState(active) {
   isGenerating = !!active;
-  if (!isGenerating) {
-    isCancelling = false;
-  }
   if (!generateBtn) return;
   if (isGenerating) {
-    generateBtn.textContent = 'Cancel';
-    generateBtn.classList.add('btn-danger');
+    generateBtn.textContent = 'Generating…';
+    generateBtn.classList.remove('btn-danger');
   } else {
     generateBtn.textContent = 'Generate';
     generateBtn.classList.remove('btn-danger');
   }
   updateGenerateAvailability();
+}
+
+function nowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function formatGenerationDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(2)}s`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
 }
 
 function clampSpeed(value) {
@@ -704,13 +723,7 @@ function toggleOptionsDrawer() {
 }
 
 function handleGenerateClick() {
-  if (isCancelling) {
-    return;
-  }
-  if (isGenerating) {
-    cancelSynthesis({ userInitiated: true });
-    return;
-  }
+  if (isGenerating) return;
   if (isPreviewScreenActive()) {
     startSynthesis();
   }
@@ -725,9 +738,7 @@ function navigateToInput() {
 }
 
 async function startSynthesis() {
-  if (isGenerating || isCancelling) {
-    return;
-  }
+  if (isGenerating) return;
   const textArea = document.getElementById('text');
   const status = document.getElementById('status');
   if (!textArea || !status) return;
@@ -755,164 +766,62 @@ async function startSynthesis() {
     title: currentTitle
   };
 
+  const synthInvocationStartedAt = nowMs();
   status.textContent = 'Synthesizing…';
   resetAlignmentState();
   clearAudioSource();
+  setActiveLibraryRow(null);
   setGeneratingState(true);
+  showProgressUi(10);
+  let progressHandled = false;
+  let generationDurationMs = null;
 
   try {
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/synthesize');
-    const synthesis = {
-      socket: ws,
-      jobId: null,
-      terminalSeen: false,
-      cancelled: false
-    };
-    activeSynthesis = synthesis;
-
-    const closeWs = (code) => {
-      try { ws.close(code || 1000); } catch (_) {}
-    };
-
-    ws.onopen = () => {
-      try {
-        ws.send(JSON.stringify({ type: 'start', request: payload }));
-      } catch (err) {
-        console.error('Failed to send start message:', err);
-        status.textContent = `Error: ${err && err.message ? err.message : 'WebSocket send failed'}`;
-        hideProgressUi();
-        setGeneratingState(false);
-        activeSynthesis = null;
-        closeWs(1011);
+    const synthResult = await window.api.synthesize(payload);
+    if (!synthResult || !synthResult.ok) {
+      throw new Error(synthResult && synthResult.error ? synthResult.error : 'Synthesis failed');
+    }
+    if (!synthResult.wav_rel_path) {
+      throw new Error('Synthesis did not return an audio path');
+    }
+    const fileRes = await window.api.getSavedAudioFileUrl(synthResult.wav_rel_path);
+    if (!fileRes || !fileRes.ok || !fileRes.url) {
+      throw new Error('Could not resolve saved file URL');
+    }
+    const backendElapsed = Number.isFinite(synthResult.elapsed_ms) ? synthResult.elapsed_ms : null;
+    const fallbackElapsed = Math.max(0, Math.round(nowMs() - synthInvocationStartedAt));
+    generationDurationMs = backendElapsed !== null ? backendElapsed : fallbackElapsed;
+    const generationSuffix = (() => {
+      const label = formatGenerationDuration(generationDurationMs);
+      return label ? ` — generated in ${label}` : '';
+    })();
+    audioElement.src = fileRes.url;
+    try {
+      await audioElement.play();
+      status.textContent = `Playing${generationSuffix}`;
+    } catch (playErr) {
+      console.warn('Autoplay failed:', playErr);
+      status.textContent = `Ready${generationSuffix}`;
+    }
+    updateProgressUi(100);
+    hideProgressUi({ resetWidth: false });
+    progressHandled = true;
+    setActiveLibraryRow(synthResult.wav_rel_path || null);
+    await refreshSavedAudios({ showSkeleton: false });
+    if (synthResult.align_rel_path) {
+      const metaRes = await window.api.getSavedAudioAlignment(synthResult.align_rel_path);
+      if (metaRes && metaRes.ok && metaRes.metadata) {
+        captureAlignmentMetadata(metaRes.metadata);
       }
-    };
-
-    ws.onmessage = async (ev) => {
-      if (activeSynthesis !== synthesis) return;
-      try {
-        const msg = JSON.parse(ev.data);
-        if (!msg || typeof msg !== 'object') return;
-        if (!synthesis.jobId && msg.job_id) synthesis.jobId = msg.job_id;
-        switch (msg.type) {
-          case 'started':
-            status.textContent = 'Synthesizing…';
-            showProgressUi(0);
-            break;
-          case 'segment':
-            if (typeof msg.progress === 'number') {
-              const pct = Math.round(msg.progress * 100);
-              updateProgressUi(pct);
-              status.textContent = `Synthesizing… ${pct}%`;
-            } else {
-              status.textContent = 'Synthesizing…';
-            }
-            break;
-          case 'complete': {
-            synthesis.terminalSeen = true;
-            try {
-              if (!msg.ok || !msg.wav_rel_path) throw new Error('Invalid complete message');
-              const fileRes = await window.api.getSavedAudioFileUrl(msg.wav_rel_path);
-              if (!fileRes || !fileRes.ok || !fileRes.url) throw new Error('Could not resolve saved file URL');
-              audioElement.src = fileRes.url;
-              await audioElement.play();
-              status.textContent = 'Playing';
-              updateProgressUi(100);
-              hideProgressUi({ resetWidth: false });
-              setActiveLibraryRow(msg.wav_rel_path || null);
-              await refreshSavedAudios({ showSkeleton: false });
-              if (msg.align_rel_path) {
-                const metaRes = await window.api.getSavedAudioAlignment(msg.align_rel_path);
-                if (metaRes && metaRes.ok && metaRes.metadata) {
-                  captureAlignmentMetadata(metaRes.metadata);
-                }
-              }
-            } catch (err) {
-              console.error('Completion handling failed:', err);
-              status.textContent = `Error: ${err && err.message ? err.message : 'Playback failed'}`;
-              hideProgressUi();
-            }
-            setGeneratingState(false);
-            activeSynthesis = null;
-            closeWs(1000);
-            break;
-          }
-          case 'cancelled':
-            synthesis.terminalSeen = true;
-            status.textContent = 'Cancelled';
-            hideProgressUi();
-            setGeneratingState(false);
-            activeSynthesis = null;
-            closeWs(1000);
-            break;
-          case 'error':
-            synthesis.terminalSeen = true;
-            status.textContent = `Error: ${msg && msg.message ? msg.message : 'Unknown error'}`;
-            hideProgressUi();
-            setGeneratingState(false);
-            activeSynthesis = null;
-            closeWs(1011);
-            break;
-          default:
-            break;
-        }
-      } catch (err) {
-        console.error('WS message handling failed:', err);
-      }
-    };
-
-    ws.onerror = (ev) => {
-      if (activeSynthesis !== synthesis) return;
-      console.error('WebSocket error:', ev);
-      status.textContent = 'Error: connection failed';
-      hideProgressUi();
-      setGeneratingState(false);
-      activeSynthesis = null;
-    };
-
-    ws.onclose = () => {
-      if (activeSynthesis !== synthesis) return;
-      if (!synthesis.terminalSeen) {
-        status.textContent = synthesis.cancelled ? 'Cancelled' : 'Connection closed';
-        hideProgressUi();
-      }
-      setGeneratingState(false);
-      activeSynthesis = null;
-    };
+    }
   } catch (err) {
-    console.error(err);
-    status.textContent = `Error: ${err && err.message ? err.message : 'WebSocket failed'}`;
-    hideProgressUi();
+    console.error('Synthesis failed:', err);
+    status.textContent = `Error: ${err && err.message ? err.message : 'Synthesis failed'}`;
+  } finally {
+    if (!progressHandled) {
+      hideProgressUi();
+    }
     setGeneratingState(false);
-    activeSynthesis = null;
-  }
-}
-
-function cancelSynthesis({ userInitiated = false } = {}) {
-  if (!activeSynthesis) return;
-  const { socket } = activeSynthesis;
-  activeSynthesis.cancelled = true;
-  isCancelling = true;
-  const status = document.getElementById('status');
-  if (status) status.textContent = userInitiated ? 'Cancelling…' : 'Cancelling…';
-  if (generateBtn) {
-    generateBtn.classList.remove('btn-danger');
-    generateBtn.textContent = 'Cancelling…';
-    generateBtn.disabled = true;
-  }
-  suppressNextStopStatus = true;
-  try {
-    if (socket && socket.readyState === WebSocket.OPEN && activeSynthesis.jobId) {
-      socket.send(JSON.stringify({ type: 'cancel', job_id: activeSynthesis.jobId }));
-    }
-  } catch (_err) {
-    // ignore send failures during cancel
-  }
-  try {
-    if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
-      socket.close(1000);
-    }
-  } catch (_err) {
-    // ignore close failures
   }
 }
 
@@ -932,11 +841,7 @@ function stopPlayback() {
   stopHighlightLoop();
   clearHighlightDecorations();
   const status = document.getElementById('status');
-  if (suppressNextStopStatus) {
-    suppressNextStopStatus = false;
-    return;
-  }
-  status.textContent = 'Stopped';
+  if (status) status.textContent = 'Stopped';
 }
 
 function stripHtmlToText(htmlString) {
@@ -1203,8 +1108,6 @@ async function loadUrlAndRender(urlInput) {
   const status = document.getElementById('status');
   const url = urlInput && urlInput.trim();
   if (!isLikelyUrl(url)) return;
-  if (lastLoadedUrl && lastLoadedUrl === url) return;
-  lastLoadedUrl = url;
   status.textContent = 'Loading URL…';
   try {
     const res = await window.api.fetchUrl(url);
@@ -1385,7 +1288,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (backBtn) {
     backBtn.addEventListener('click', () => {
-      cancelSynthesis({ userInitiated: true });
+      if (isGenerating) return;
       stopPlayback();
       navigateToInput();
     });

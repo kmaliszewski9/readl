@@ -6,7 +6,7 @@ import fs from 'fs';
 
 const STYLE_DIM = 256;
 const SAMPLE_RATE = 24000;
-const MAGIC_DIVISOR = 80; // See python pipeline.join_timestamps
+const MAGIC_DIVISOR = 80;
 const MAX_PHONEME_COUNT = 510;
 const WATERFALL_BREAKS = ['!.?…', ':;', ',—'];
 const WATERFALL_BUMPS = new Set([')', '”']);
@@ -294,7 +294,11 @@ export class KokoroTTS {
     const language = this._validate_voice(voice);
     const { phonemes, tokens } = await phonemizeDetailed(text, language);
 
-    const tokenCopies = tokens.map((token) => ({ ...token }));
+    const tokenCopies = tokens.map((token) => ({
+      ...token,
+      start_ts: token.start_ts ?? null,
+      end_ts: token.end_ts ?? null,
+    }));
     const chunks = chunkEnglishTokens(tokenCopies);
     const synthesisPlan = chunks.length
       ? chunks
@@ -361,7 +365,7 @@ export class KokoroTTS {
    * @param {StreamGenerateOptions} options Additional options
    * @returns {AsyncGenerator<KokoroResult, void, void>}
    */
-  async *stream(text, { voice = "af_heart", speed = 1, split_pattern = null, return_timestamps = undefined } = {}) {
+  async *stream(text, { voice = "af_heart", speed = 1, split_pattern = null } = {}) {
     const language = this._validate_voice(voice);
 
     /** @type {TextSplitterStream} */
@@ -380,16 +384,17 @@ export class KokoroTTS {
     } else {
       throw new Error("Invalid input type. Expected string or TextSplitterStream.");
     }
-    if (return_timestamps !== undefined) {
-      // Backwards compatibility: timestamps now available via KokoroResult.timestamps.
-    }
     let textIndex = 0;
     for await (const sentence of splitter) {
       if (!sentence?.trim()) {
         continue;
       }
       const { phonemes, tokens } = await phonemizeDetailed(sentence, language);
-      const tokenCopies = tokens.map((token) => ({ ...token }));
+      const tokenCopies = tokens.map((token) => ({
+        ...token,
+        start_ts: token.start_ts ?? null,
+        end_ts: token.end_ts ?? null,
+      }));
       const chunks = chunkEnglishTokens(tokenCopies);
       const synthesisPlan = chunks.length
         ? chunks
@@ -407,7 +412,11 @@ export class KokoroTTS {
         yield new KokoroResult({
           graphemes: chunk.text || sentence,
           phonemes: chunk.phonemes,
-          tokens: chunk.tokens.map((token) => ({ ...token })),
+          tokens: chunk.tokens.map((token) => ({
+            ...token,
+            start_ts: token.start_ts ?? null,
+            end_ts: token.end_ts ?? null,
+          })),
           audio,
           pred_dur,
           text_index: textIndex,
@@ -529,4 +538,4 @@ export const env = {
   },
 };
 
-export { TextSplitterStream, KokoroResult };
+export { TextSplitterStream, KokoroResult, phonemizeDetailed };
