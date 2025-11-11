@@ -2,7 +2,6 @@ import { env as hf, StyleTextToSpeech2Model, AutoTokenizer, Tensor, RawAudio } f
 import { phonemizeDetailed } from "./phonemize.js";
 import { TextSplitterStream } from "./splitter.js";
 import { getVoiceData, VOICES } from "./voices.js";
-import fs from 'fs';
 
 const STYLE_DIM = 256;
 const SAMPLE_RATE = 24000;
@@ -450,19 +449,10 @@ export class KokoroTTS {
 
     // Run model
     const outputs = await this.model(inputs);
-    // Debug: write outputs schema once if you want to inspect
-    try {
-      if (!fs.existsSync('outputs.json')) {
-        fs.writeFileSync('outputs.json', JSON.stringify(outputs, null, 2));
-        console.log('outputs written to outputs.json');
-      }
-    } catch {}
     const waveform = outputs.waveform ?? outputs['audio'];
     const audio = new RawAudio(waveform.data, SAMPLE_RATE);
 
-
-    // Try to extract duration predictions (naming may vary by export)
-    const durTensor = outputs.pred_dur ?? outputs.duration ?? outputs.durations ?? outputs['dur'];
+    const durTensor = outputs.pred_dur;
     let pred_dur = null;
     if (durTensor?.data) {
       const arr = Array.from(durTensor.data);
@@ -471,9 +461,6 @@ export class KokoroTTS {
     }
     return { audio, pred_dur };
   }
-
-  // No fallback timestamps: if the model does not expose durations,
-  // we do not return timestamps and leave it to the caller to decide.
 
   /**
    * Internal: mutate tokens with timestamp data using duration predictions.
