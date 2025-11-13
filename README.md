@@ -11,7 +11,7 @@ Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js 
 
 ## Architecture
 
-The Kokoro runtime lives in the sibling `kokoro.js` package. We build it with Rollup/TypeScript and install it into the Electron app via a local `file:` dependency, so the main process can `require('kokoro-js')` and execute ONNX directly inside Node. The renderer only talks to the main process over IPC, keeping audio buffers off the UI thread. This replaces the previous `python_service/app.py` WebSocket hop; the Python folder is still present for archival/reference experiments, but it is no longer part of the default desktop flow.
+The Kokoro runtime lives in the sibling `kokoro.js` package. We build it with Rollup/TypeScript and install it into the Electron app via a local `file:` dependency. Inside Electron, a lightweight worker thread (`kokoro-worker.js`) hosts the TTS engine (`kokoro-engine.js`) so the main process stays responsive while synthesis runs and can abort work on demand. The renderer only talks to the main process over IPC, which then proxies requests to the worker and streams results back; this keeps audio buffers and ONNX execution off the UI thread.
 
 ## Prerequisites
 

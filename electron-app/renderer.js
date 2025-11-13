@@ -30,6 +30,8 @@ let optionsDrawer = null;
 let optionsBackdrop = null;
 let speedValueLabel = null;
 let isGenerating = false;
+let cancelRequested = false;
+let activeSynthesisRequestId = null;
 let optionsDrawerOpen = false;
 let currentOptions = {
   voice: 'af_heart',
@@ -574,7 +576,11 @@ function isPreviewScreenActive() {
 function updateGenerateAvailability(forcePreview) {
   if (!generateBtn) return;
   const onPreview = typeof forcePreview === 'boolean' ? forcePreview : isPreviewScreenActive();
-  generateBtn.disabled = isGenerating || !onPreview;
+  if (isGenerating) {
+    generateBtn.disabled = cancelRequested;
+  } else {
+    generateBtn.disabled = !onPreview;
+  }
 }
 
 function updateShellForScreen(screenId) {
@@ -584,16 +590,34 @@ function updateShellForScreen(screenId) {
   updateGenerateAvailability(onPreview);
 }
 
-function setGeneratingState(active) {
-  isGenerating = !!active;
+function updateGenerateButtonUi() {
   if (!generateBtn) return;
   if (isGenerating) {
-    generateBtn.textContent = 'Generating…';
-    generateBtn.classList.remove('btn-danger');
+    if (cancelRequested) {
+      generateBtn.textContent = 'Canceling…';
+      generateBtn.disabled = true;
+    } else {
+      generateBtn.textContent = 'Stop';
+    }
+    generateBtn.classList.add('btn-danger');
   } else {
     generateBtn.textContent = 'Generate';
     generateBtn.classList.remove('btn-danger');
   }
+}
+
+function setGeneratingState(active) {
+  isGenerating = !!active;
+  if (!isGenerating) {
+    cancelRequested = false;
+  }
+  updateGenerateButtonUi();
+  updateGenerateAvailability();
+}
+
+function setCancelRequested(active) {
+  cancelRequested = !!active;
+  updateGenerateButtonUi();
   updateGenerateAvailability();
 }
 
@@ -723,7 +747,10 @@ function toggleOptionsDrawer() {
 }
 
 function handleGenerateClick() {
-  if (isGenerating) return;
+  if (isGenerating) {
+    cancelActiveSynthesis();
+    return;
+  }
   if (isPreviewScreenActive()) {
     startSynthesis();
   }
@@ -735,6 +762,29 @@ function navigateToPreview() {
 
 function navigateToInput() {
   showScreen('screen-input');
+}
+
+async function cancelActiveSynthesis() {
+  if (!isGenerating || !activeSynthesisRequestId) return;
+  setCancelRequested(true);
+  const status = document.getElementById('status');
+  if (status) status.textContent = 'Canceling…';
+  try {
+    const res = await window.api.cancelSynthesis(activeSynthesisRequestId);
+    if (!res || !res.ok) {
+      // If the backend already finished, let the normal completion flow update UI without spamming errors.
+      if (res && res.error === 'No active synthesis for request id') {
+        return;
+      }
+      console.warn('Cancel request failed:', res && res.error ? res.error : res);
+      setCancelRequested(false);
+      if (status) status.textContent = 'Cancel failed';
+    }
+  } catch (err) {
+    console.error('Cancel request encountered an error:', err);
+    setCancelRequested(false);
+    if (status) status.textContent = 'Cancel failed';
+  }
 }
 
 async function startSynthesis() {
@@ -765,6 +815,9 @@ async function startSynthesis() {
     raw_content_type: currentRawContentType,
     title: currentTitle
   };
+  const requestId = `synth-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  payload.request_id = requestId;
+  activeSynthesisRequestId = requestId;
 
   const synthInvocationStartedAt = nowMs();
   status.textContent = 'Synthesizing…';
@@ -778,6 +831,10 @@ async function startSynthesis() {
 
   try {
     const synthResult = await window.api.synthesize(payload);
+    if (synthResult && synthResult.canceled) {
+      status.textContent = 'Canceled';
+      return;
+    }
     if (!synthResult || !synthResult.ok) {
       throw new Error(synthResult && synthResult.error ? synthResult.error : 'Synthesis failed');
     }
@@ -820,6 +877,9 @@ async function startSynthesis() {
   } finally {
     if (!progressHandled) {
       hideProgressUi();
+    }
+    if (activeSynthesisRequestId === requestId) {
+      activeSynthesisRequestId = null;
     }
     setGeneratingState(false);
   }

@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   synthesize: async (request) => {
     return await ipcRenderer.invoke('kokoro-synthesize', request);
+  },
+  cancelSynthesis: async (requestId) => {
+    return await ipcRenderer.invoke('kokoro-cancel', requestId);
   }
 });
-
