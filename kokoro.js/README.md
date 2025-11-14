@@ -81,36 +81,6 @@ splitter.close();
 // Alternatively, if you'd like to keep the stream open, but flush any remaining text, you can use the `flush` method.
 // splitter.flush();
 
-## Timestamps (word-level)
-
-You can get approximate word-level timestamps computed from the model's internal duration predictions.
-
-```js
-import { KokoroTTS } from "kokoro-js";
-
-const model_id = "onnx-community/Kokoro-82M-v1.0-ONNX";
-const tts = await KokoroTTS.from_pretrained(model_id, { dtype: "q8", device: "wasm" });
-
-const result = await tts.generate_with_timestamps(
-  "Life is like a box of chocolates.",
-  { voice: "af_heart" }
-);
-
-console.log(result.phonemes);
-console.table(result.timestamps); // [{ index, text, phonemes, start_ts, end_ts }, ...]
-result.audio.save("out.wav");
-
-// Streaming variant
-for await (const chunk of tts.stream(
-  "You never know what you're gonna get.",
-  { voice: "af_heart" }
-)) {
-  console.log({ text: chunk.graphemes, phonemes: chunk.phonemes });
-  console.table(chunk.timestamps);
-}
-```
-```
-
 ## Voices/Samples
 
 > [!TIP]

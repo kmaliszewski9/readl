@@ -88,15 +88,12 @@ const waterfallLastIndex = (tokens, nextCount, maxCount = MAX_PHONEME_COUNT) => 
 };
 
 const chunkEnglishTokens = (tokens, maxCount = MAX_PHONEME_COUNT) => {
-  if (!Array.isArray(tokens) || tokens.length === 0) {
-    return [];
-  }
   const chunks = [];
   let buffer = [];
   let pcount = 0;
 
   for (const token of tokens) {
-    let nextPs = `${token?.phonemes ?? ""}${token?.whitespace ? " " : ""}`;
+    let nextPs = `${phonemeOrText(token)}${token?.whitespace ? " " : ""}`;
     const nextCount = pcount + nextPs.trimEnd().length;
     if (nextCount > maxCount && buffer.length > 0) {
       let sliceIndex = waterfallLastIndex(buffer, nextCount, maxCount);
@@ -292,6 +289,7 @@ export class KokoroTTS {
   async generate(text, { voice = "af_heart", speed = 1 } = {}) {
     const language = this._validate_voice(voice);
     const { phonemes, tokens } = await phonemizeDetailed(text, language);
+    console.info(`[kokoro] Phonemized text length=${text.length}, phonemes=${phonemes.length}, tokens=${tokens.length}`);
 
     const tokenCopies = tokens.map((token) => ({
       ...token,
@@ -311,7 +309,14 @@ export class KokoroTTS {
       if (!chunk.phonemes) {
         continue;
       }
-      const { input_ids } = this.tokenizer(chunk.phonemes, { truncation: true });
+      console.info(`[kokoro] Chunking text length=${chunk.text.length}, phonemes=${chunk.phonemes.length}, tokens=${chunk.tokens.length}`);
+      let chunkPhonemes = chunk.phonemes;
+      if (chunkPhonemes.length > MAX_PHONEME_COUNT) {
+        console.warn(`[kokoro] Unexpected chunk phoneme length ${chunkPhonemes.length} (> ${MAX_PHONEME_COUNT}). Truncating to ${MAX_PHONEME_COUNT}.`);
+        chunkPhonemes = chunkPhonemes.slice(0, MAX_PHONEME_COUNT);
+        chunk.phonemes = chunkPhonemes;
+      }
+      const { input_ids } = this.tokenizer(chunkPhonemes, { truncation: true });
       const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
       audioSegments.push(audio);
       if (pred_dur) {
@@ -335,16 +340,6 @@ export class KokoroTTS {
       pred_dur: combinedPredDur,
       text_index: 0,
     });
-  }
-
-  /**
-   * Generate speech with alignment metadata (legacy helper). Returns KokoroResult.
-   * @param {string} text Input text
-   * @param {GenerateOptions} options Options
-   * @returns {Promise<KokoroResult>}
-   */
-  async generate_with_timestamps(text, { voice = "af_heart", speed = 1 } = {}) {
-    return this.generate(text, { voice, speed });
   }
 
   /**
@@ -403,7 +398,13 @@ export class KokoroTTS {
         if (!chunk.phonemes) {
           continue;
         }
-        const { input_ids } = this.tokenizer(chunk.phonemes, { truncation: true });
+        let chunkPhonemes = chunk.phonemes;
+        if (chunkPhonemes.length > MAX_PHONEME_COUNT) {
+          console.warn(`[kokoro] Unexpected chunk phoneme length ${chunkPhonemes.length} (> ${MAX_PHONEME_COUNT}). Truncating to ${MAX_PHONEME_COUNT}.`);
+          chunkPhonemes = chunkPhonemes.slice(0, MAX_PHONEME_COUNT);
+          chunk.phonemes = chunkPhonemes;
+        }
+        const { input_ids } = this.tokenizer(chunkPhonemes, { truncation: true });
         const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
         if (pred_dur) {
           this._join_timestamps(chunk.tokens, pred_dur);
