@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { performance } = require('node:perf_hooks');
-const { KokoroTTS, env: kokoroEnv, phonemizeDetailed: kokoroPhonemizeDetailed } = require('kokoro-js');
+const { KokoroTTS, env: kokoroEnv } = require('kokoro-js');
 
 const SAMPLE_RATE = 24000;
 const repoRoot = path.resolve(__dirname, '..');
@@ -15,9 +15,6 @@ const DEFAULT_KOKORO_CACHE_DIR = (() => {
   const raw = process.env.READL_KOKORO_CACHE_DIR;
   return raw && raw.trim().length > 0 ? path.resolve(raw.trim()) : path.join(repoRoot, '.kokoro-cache');
 })();
-const MAX_TEXT_CHUNK_LENGTH = Number(500);
-const MAX_PHONEME_TOKENS = Number(500);
-
 function getAbortError(signal) {
   if (!signal || !signal.aborted) return null;
   const reason = signal.reason;
@@ -57,80 +54,6 @@ function slugifyForFile(text) {
   const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
   const safe = normalized.replace(/[^a-z0-9\-\_ ]+/g, '').replace(/\s+/g, '-');
   return safe.length > 0 ? safe.slice(0, 60) : 'tts';
-}
-
-function buildSplitRegex(pattern) {
-  if (typeof pattern !== 'string' || pattern.trim().length === 0) return null;
-  try {
-    return new RegExp(pattern, 'g');
-  } catch (_) {
-    return null;
-  }
-}
-
-function fallbackSentenceSplit(text, maxLen = MAX_TEXT_CHUNK_LENGTH) {
-  const sentences = String(text || '')
-    .match(/[^.!?\n]+[.!?]*\s*/g);
-  if (!sentences || !sentences.length) {
-    return [text.trim()];
-  }
-  const chunks = [];
-  let buffer = '';
-  for (const sentence of sentences) {
-    const next = buffer + sentence;
-    if (next.length > maxLen && buffer.trim().length > 0) {
-      chunks.push(buffer.trim());
-      buffer = sentence;
-      continue;
-    }
-    buffer = next;
-  }
-  if (buffer.trim().length > 0) {
-    chunks.push(buffer.trim());
-  }
-  return chunks.length > 0 ? chunks : [text.trim()];
-}
-
-function chunkByLength(text, maxLen) {
-  const result = [];
-  let cursor = 0;
-  const input = String(text || '');
-  while (cursor < input.length) {
-    const slice = input.slice(cursor, cursor + maxLen).trim();
-    if (slice.length > 0) {
-      result.push(slice);
-    }
-    cursor += maxLen;
-  }
-  return result.length > 0 ? result : [input.trim()];
-}
-
-function splitTextIntoChunks(text, pattern) {
-  const trimmed = typeof text === 'string' ? text.trim() : '';
-  if (!trimmed) return [];
-  const regex = buildSplitRegex(pattern);
-  let parts = regex
-    ? trimmed.split(regex).map(part => part.trim()).filter(part => part.length > 0)
-    : [trimmed];
-  if (!parts.length) {
-    parts = [trimmed];
-  }
-  const normalized = [];
-  for (const part of parts) {
-    if (part.length > MAX_TEXT_CHUNK_LENGTH) {
-      const fallbackParts = fallbackSentenceSplit(part);
-      for (const fallbackPart of fallbackParts) {
-        if (fallbackPart.length > MAX_TEXT_CHUNK_LENGTH) {
-          normalized.push(...chunkByLength(fallbackPart, MAX_TEXT_CHUNK_LENGTH));
-        } else {
-          normalized.push(fallbackPart);
-        }
-      }
-    } else {
-      normalized.push(part);
-    }
-  }
-  return normalized;
 }
 
 function buildSavePath(audioRoot, voice, langCode, text) {
@@ -198,186 +121,14 @@ function formatIsoSeconds(date = new Date()) {
   return date.toISOString().split('.')[0];
 }
 
-function splitSentencesPreservingWhitespace(text) {
-  const segments = [];
-  if (!text) return segments;
-  const sentenceRegex = /[^.!?…\n]+[.!?…]+[\s]*/g;
-  let match;
-  let lastIndex = 0;
-  while ((match = sentenceRegex.exec(text)) !== null) {
-    const start = match.index;
-    if (start > lastIndex) {
-      const gap = text.slice(lastIndex, start);
-      if (gap.length > 0) segments.push(gap);
-    }
-    segments.push(match[0]);
-    lastIndex = sentenceRegex.lastIndex;
-  }
-  if (lastIndex < text.length) {
-    segments.push(text.slice(lastIndex));
-  }
-  return segments.filter(segment => segment.length > 0);
-}
-
-function splitTextNearMiddle(text) {
-  if (!text || text.length < 2) return [text, ''];
-  const len = text.length;
-  const mid = Math.floor(len / 2);
-  const isWhitespace = /\s/;
-  let splitIdx = -1;
-  for (let delta = 0; delta < Math.min(40, len); delta += 1) {
-    const leftIdx = mid - delta;
-    if (leftIdx > 0 && isWhitespace.test(text[leftIdx])) {
-      splitIdx = leftIdx;
-      break;
-    }
-    const rightIdx = mid + delta;
-    if (rightIdx < len && isWhitespace.test(text[rightIdx])) {
-      splitIdx = rightIdx;
-      break;
-    }
-  }
-  if (splitIdx === -1) splitIdx = mid;
-  const left = text.slice(0, splitIdx);
-  const right = text.slice(splitIdx);
-  return [left, right];
-}
-
-function mergeAudioSegments(rawAudios) {
-  const valid = rawAudios.filter(audio => audio && audio.audio instanceof Float32Array && audio.audio.length > 0);
-  if (!valid.length) return null;
-  if (valid.length === 1) return valid[0];
-  const totalSamples = valid.reduce((sum, item) => sum + item.audio.length, 0);
-  const merged = new Float32Array(totalSamples);
-  let offset = 0;
-  for (const item of valid) {
-    merged.set(item.audio, offset);
-    offset += item.audio.length;
-  }
-  const RawAudioCtor = valid[0].constructor;
-  return new RawAudioCtor(merged, SAMPLE_RATE);
-}
-
 function getAudioDurationSeconds(rawAudio) {
   if (!rawAudio || !(rawAudio.audio instanceof Float32Array)) return 0;
   return rawAudio.audio.length / SAMPLE_RATE;
 }
 
 function createKokoroEngine() {
-  const phonemeCountCache = new Map();
   let kokoroLoadPromise = null;
   let kokoroTtsInstance = null;
-
-  async function getPhonemeTokenStats(text, langCode) {
-    const trimmed = typeof text === 'string' ? text.trim() : '';
-    if (!trimmed) return { count: 0 };
-    const key = `${langCode || 'a'}::${trimmed}`;
-    if (phonemeCountCache.has(key)) {
-      return phonemeCountCache.get(key);
-    }
-    const res = await kokoroPhonemizeDetailed(trimmed, langCode || 'a');
-    const count = Array.isArray(res?.tokens) ? res.tokens.length : 0;
-    const stats = { count };
-    phonemeCountCache.set(key, stats);
-    return stats;
-  }
-
-  async function forceSplitByPhonemes(text, langCode) {
-    const queue = [text];
-    const results = [];
-    while (queue.length) {
-      const current = queue.shift();
-      if (!current || !current.trim()) {
-        if (results.length) {
-          results[results.length - 1] += current || '';
-        }
-        continue;
-      }
-      const { count } = await getPhonemeTokenStats(current, langCode);
-      if (count <= MAX_PHONEME_TOKENS || current.length <= 80) {
-        results.push(current);
-        continue;
-      }
-      const [left, right] = splitTextNearMiddle(current);
-      if (!left || !right || left === current || right === current) {
-        results.push(current);
-        continue;
-      }
-      queue.unshift(right, left);
-    }
-    return results;
-  }
-
-  async function splitChunkByPhonemeLimit(text, langCode) {
-    const sentences = splitSentencesPreservingWhitespace(text);
-    if (!sentences.length) return [];
-    const refined = [];
-    let buffer = '';
-    let bufferTokens = 0;
-
-    const flush = () => {
-      if (buffer && buffer.trim().length > 0) {
-        refined.push(buffer);
-      }
-      buffer = '';
-      bufferTokens = 0;
-    };
-
-    for (const sentence of sentences) {
-      const trimmed = sentence.trim();
-      if (!trimmed) {
-        buffer += sentence;
-        continue;
-      }
-      const { count } = await getPhonemeTokenStats(trimmed, langCode);
-      if (count > MAX_PHONEME_TOKENS) {
-        flush();
-        console.warn(`[kokoro] Sentence ${sentence.length} tokens exceeds limit, forcing split`);
-        const forced = await forceSplitByPhonemes(sentence, langCode);
-        forced.forEach((part) => {
-          if (part && part.trim().length > 0) {
-            refined.push(part);
-          }
-        });
-        continue;
-      }
-      if (bufferTokens + count <= MAX_PHONEME_TOKENS) {
-        buffer += sentence;
-        bufferTokens += count;
-      } else {
-        flush();
-        buffer = sentence;
-        bufferTokens = count;
-      }
-    }
-    flush();
-    return refined;
-  }
-
-  async function buildPhonemeAwareChunks(text, langCode, splitPattern) {
-    const coarse = splitTextIntoChunks(text, splitPattern);
-    const supportsPhonemes = langCode === 'a' || langCode === 'b';
-    if (!supportsPhonemes) {
-      return coarse;
-    }
-    const refined = [];
-    try {
-      for (const chunk of coarse) {
-        if (!chunk || !chunk.trim()) continue;
-        const parts = await splitChunkByPhonemeLimit(chunk, langCode);
-        if (!parts || !parts.length) continue;
-        parts.forEach((part) => {
-          if (part && part.trim().length > 0) {
-            refined.push(part);
-          }
-        });
-      }
-    } catch (err) {
-      console.warn('[kokoro] Phoneme-aware chunking failed, falling back to coarse chunks:', err && err.message ? err.message : err);
-      return coarse;
-    }
-    return refined.length > 0 ? refined : coarse;
-  }
 
   async function loadKokoroTts() {
     if (kokoroTtsInstance) return kokoroTtsInstance;
@@ -426,108 +177,78 @@ function createKokoroEngine() {
     throwIfAborted(abortSignal);
     const tts = await loadKokoroTts();
     throwIfAborted(abortSignal);
-    const splitPattern = typeof requestPayload?.split_pattern === 'string' && requestPayload.split_pattern.length > 0
-      ? requestPayload.split_pattern
-      : '\n+';
-    const textChunks = await buildPhonemeAwareChunks(text, langCode, splitPattern);
-    throwIfAborted(abortSignal);
-    if (!textChunks.length) {
-      throw new Error('No text chunks produced for synthesis');
-    }
-    const maxChunkLen = textChunks.reduce((max, chunk) => Math.max(max, chunk.length), 0);
-    console.info(`[kokoro] Synth request length=${text.length}, chunks=${textChunks.length}, maxChunkLen=${maxChunkLen}`);
-    const audioChunks = [];
-    const segmentsMetadata = [];
-    let cumulativeOffset = 0;
-    let textIndex = 0;
-    let chunkOrdinal = 0;
+    console.info(`[kokoro] Synth request length=${text.length}`);
+    const textPreview = JSON.stringify(text);
+    console.info(`[kokoro] full text length=${text.length} text=${textPreview}`);
 
-    for (const chunk of textChunks) {
+    let synthResult;
+    try {
+      synthResult = await tts.generate(text, { voice, speed });
       throwIfAborted(abortSignal);
-      const segmentText = chunk.trim();
-      if (!segmentText) continue;
-      chunkOrdinal += 1;
-      console.info(`chunk ${chunkOrdinal}/${textChunks.length} length=${segmentText.length}`);
-      let chunkResult;
-      try {
-        chunkResult = await tts.generate(segmentText, { voice, speed });
-        throwIfAborted(abortSignal);
-      } catch (err) {
-        console.error(`[kokoro] Chunk ${chunkOrdinal}/${textChunks.length} failed (length=${segmentText.length})`, err);
-        throw err;
-      }
-      if (!chunkResult || !chunkResult.audio) {
-        throw new Error('Kokoro returned no audio data');
-      }
-      audioChunks.push(chunkResult.audio);
-
-      const durationFromTokens = deriveDurationSecondsFromTokens(chunkResult.tokens);
-      const durationFromAudio = getAudioDurationSeconds(chunkResult.audio);
-      let chunkDuration = Number.isFinite(durationFromAudio) && durationFromAudio > 0
-        ? durationFromAudio
-        : durationFromTokens;
-      if (!Number.isFinite(chunkDuration) || chunkDuration <= 0) {
-        chunkDuration = 0;
-      }
-
-      if (
-        Array.isArray(chunkResult.tokens)
-        && chunkResult.tokens.length
-        && Number.isFinite(durationFromTokens)
-        && durationFromTokens > 0
-        && Number.isFinite(chunkDuration)
-        && chunkDuration > 0
-      ) {
-        const timingScale = chunkDuration / durationFromTokens;
-        if (Math.abs(timingScale - 1) > 1e-4) {
-          chunkResult.tokens.forEach((token) => {
-            if (!token) return;
-            if (typeof token.start_ts === 'number' && Number.isFinite(token.start_ts)) {
-              token.start_ts = Number(token.start_ts) * timingScale;
-            }
-            if (typeof token.end_ts === 'number' && Number.isFinite(token.end_ts)) {
-              token.end_ts = Number(token.end_ts) * timingScale;
-            }
-          });
-        }
-      }
-
-      const safeChunkDuration = Number.isFinite(chunkDuration) && chunkDuration > 0 ? chunkDuration : 0;
-      const { tokens: serializedTokens, hasTimestamps } = serializeTokens(chunkResult.tokens, cumulativeOffset);
-
-      const segmentMetadata = {
-        text_index: textIndex,
-        offset_seconds: cumulativeOffset,
-        duration_seconds: safeChunkDuration,
-      };
-      if (serializedTokens.length > 0) {
-        segmentMetadata.tokens = serializedTokens;
-        if (hasTimestamps) {
-          segmentMetadata.has_token_timestamps = true;
-        }
-      }
-      segmentsMetadata.push(segmentMetadata);
-
-      cumulativeOffset += safeChunkDuration;
-      textIndex += 1;
+    } catch (err) {
+      console.error('[kokoro] Synthesis failed', err);
+      throw err;
     }
+    if (!synthResult || !synthResult.audio) {
+      throw new Error('Kokoro returned no audio data');
+    }
+
+    const segmentsMetadata = [];
+    const durationFromTokens = deriveDurationSecondsFromTokens(synthResult.tokens);
+    const durationFromAudio = getAudioDurationSeconds(synthResult.audio);
+    let chunkDuration = Number.isFinite(durationFromAudio) && durationFromAudio > 0
+      ? durationFromAudio
+      : durationFromTokens;
+    if (!Number.isFinite(chunkDuration) || chunkDuration <= 0) {
+      chunkDuration = 0;
+    }
+
+    if (
+      Array.isArray(synthResult.tokens)
+      && synthResult.tokens.length
+      && Number.isFinite(durationFromTokens)
+      && durationFromTokens > 0
+      && Number.isFinite(chunkDuration)
+      && chunkDuration > 0
+    ) {
+      const timingScale = chunkDuration / durationFromTokens;
+      if (Math.abs(timingScale - 1) > 1e-4) {
+        synthResult.tokens.forEach((token) => {
+          if (!token) return;
+          if (typeof token.start_ts === 'number' && Number.isFinite(token.start_ts)) {
+            token.start_ts = Number(token.start_ts) * timingScale;
+          }
+          if (typeof token.end_ts === 'number' && Number.isFinite(token.end_ts)) {
+            token.end_ts = Number(token.end_ts) * timingScale;
+          }
+        });
+      }
+    }
+
+    const safeChunkDuration = Number.isFinite(chunkDuration) && chunkDuration > 0 ? chunkDuration : 0;
+    const { tokens: serializedTokens, hasTimestamps } = serializeTokens(synthResult.tokens, 0);
+
+    const segmentMetadata = {
+      text_index: 0,
+      offset_seconds: 0,
+      duration_seconds: safeChunkDuration,
+    };
+    if (serializedTokens.length > 0) {
+      segmentMetadata.tokens = serializedTokens;
+      if (hasTimestamps) {
+        segmentMetadata.has_token_timestamps = true;
+      }
+    }
+    segmentsMetadata.push(segmentMetadata);
 
     throwIfAborted(abortSignal);
-    if (!audioChunks.length) {
-      throw new Error('No audio segments produced by Kokoro');
-    }
-
-    const mergedAudio = mergeAudioSegments(audioChunks);
-    if (!mergedAudio) {
-      throw new Error('Failed to merge Kokoro audio segments');
-    }
 
     const savePath = buildSavePath(audioRoot, voice, langCode, text);
     ensureDirForFile(savePath);
     throwIfAborted(abortSignal);
-    await mergedAudio.save(savePath);
+    await synthResult.audio.save(savePath);
 
-    const durationSeconds = getAudioDurationSeconds(mergedAudio);
+    const durationSeconds = getAudioDurationSeconds(synthResult.audio);
     const generationMs = Math.max(0, Math.round(performance.now() - synthStart));
     const generationSeconds = generationMs / 1000;
     console.info(`[kokoro] Synthesis completed in ${generationSeconds.toFixed(2)}s`);
@@ -543,7 +264,6 @@ function createKokoroEngine() {
       voice,
       speed,
       lang_code: langCode,
-      split_pattern: splitPattern,
       text: originalText,
       preview_html: requestPayload?.preview_html,
       source_kind: requestPayload?.source_kind,

@@ -807,7 +807,6 @@ async function startSynthesis() {
       return clampSpeed(Number.isFinite(parsed) ? parsed : currentOptions.speed);
     })(),
     lang_code: langInput && langInput.value ? langInput.value : currentOptions.lang,
-    split_pattern: '\n+',
     preview_html: currentPreviewHtml,
     source_kind: currentSourceKind,
     source_url: currentSourceUrl,
