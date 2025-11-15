@@ -63,7 +63,6 @@ ipcMain.handle('fetch-url', async (_event, urlInput) => {
 
 // Resolve shared audios root directory
 function getAudiosRoot() {
-  // Prefer env var so Python and Electron can coordinate
   const envDir = process.env.READL_AUDIO_DIR;
   const base = envDir && envDir.trim().length > 0
     ? envDir
@@ -95,58 +94,77 @@ function listDirRecursive(root, rel = '') {
   return entries;
 }
 
-const workerRequests = new Map();
 let kokoroWorker = null;
+let activeSynthesisJob = null;
 
-function resolveWorkerRequest(requestId, payload, { reject = false } = {}) {
-  const pending = workerRequests.get(requestId);
-  if (!pending) return;
-  workerRequests.delete(requestId);
-  if (reject) {
-    pending.reject(payload);
-  } else {
-    pending.resolve(payload);
-  }
-}
-
-function rejectAllWorkerRequests(error) {
-  for (const pending of workerRequests.values()) {
-    try {
-      pending.reject(error);
-    } catch (_) {}
-  }
-  workerRequests.clear();
-}
-
-function handleWorkerMessage(msg) {
-  if (!msg || typeof msg !== 'object' || msg.type !== 'result' || !msg.requestId) return;
-  resolveWorkerRequest(msg.requestId, msg);
-}
-
-function handleWorkerError(err) {
-  console.error('[kokoro-worker] error:', err);
-  rejectAllWorkerRequests(err instanceof Error ? err : new Error(String(err)));
-  if (kokoroWorker) {
-    kokoroWorker.terminate().catch(() => {});
-  }
-  kokoroWorker = null;
-}
-
-function handleWorkerExit(code) {
-  if (code !== 0) {
-    console.warn(`[kokoro-worker] exited with code ${code}`);
-  }
-  rejectAllWorkerRequests(new Error('Kokoro worker exited'));
-  kokoroWorker = null;
+function failActiveSynthesisJob(error) {
+  if (!activeSynthesisJob) return;
+  const { worker, messageHandler, reject } = activeSynthesisJob;
+  worker.off('message', messageHandler);
+  activeSynthesisJob = null;
+  reject(error);
 }
 
 function ensureKokoroWorker() {
   if (kokoroWorker) return kokoroWorker;
   kokoroWorker = new Worker(path.join(__dirname, 'kokoro-worker.js'));
-  kokoroWorker.on('message', handleWorkerMessage);
-  kokoroWorker.on('error', handleWorkerError);
-  kokoroWorker.on('exit', handleWorkerExit);
+  kokoroWorker.on('error', (err) => {
+    console.error('[kokoro-worker] error:', err);
+    const normalizedError = err instanceof Error ? err : new Error(String(err));
+    failActiveSynthesisJob(normalizedError);
+    kokoroWorker.terminate().catch(() => {});
+    kokoroWorker = null;
+  });
+  kokoroWorker.on('exit', (code) => {
+    if (code !== 0) {
+      console.warn(`[kokoro-worker] exited with code ${code}`);
+    }
+    failActiveSynthesisJob(new Error('Kokoro worker exited'));
+    kokoroWorker = null;
+  });
   return kokoroWorker;
+}
+
+function runKokoroSynthesis(payload = {}) {
+  const worker = ensureKokoroWorker();
+  if (activeSynthesisJob) {
+    throw new Error('Synthesis already running');
+  }
+  const audioRoot = getAudiosRoot();
+  return new Promise((resolve, reject) => {
+    const messageHandler = (msg) => {
+      worker.off('message', messageHandler);
+      activeSynthesisJob = null;
+      if (!msg || typeof msg !== 'object') {
+        reject(new Error('Invalid worker response'));
+        return;
+      }
+      if (msg.ok) {
+        resolve(msg.result);
+        return;
+      }
+      if (msg.canceled) {
+        const abortError = new Error(msg.error || 'Synthesis canceled');
+        abortError.name = 'AbortError';
+        reject(abortError);
+        return;
+      }
+      reject(new Error(msg.error || 'Synthesis failed'));
+    };
+    activeSynthesisJob = { worker, messageHandler, reject };
+    worker.on('message', messageHandler);
+    try {
+      worker.postMessage({
+        type: 'synthesize',
+        payload,
+        audioRoot,
+      });
+    } catch (err) {
+      worker.off('message', messageHandler);
+      activeSynthesisJob = null;
+      reject(err);
+    }
+  });
 }
 
 try { ipcMain.removeHandler('audios-list'); } catch (e) {}
@@ -246,66 +264,16 @@ ipcMain.handle('audios-read-align', async (_event, relPath) => {
 
 try { ipcMain.removeHandler('kokoro-synthesize'); } catch (e) {}
 ipcMain.handle('kokoro-synthesize', async (_event, payload) => {
-  const requestId = (typeof payload?.request_id === 'string' && payload.request_id.length > 0)
-    ? payload.request_id
-    : `synth-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const worker = ensureKokoroWorker();
-  const requestPayload = { ...(payload || {}), request_id: requestId };
-  const audioRoot = getAudiosRoot();
-  const resultPromise = new Promise((resolve, reject) => {
-    workerRequests.set(requestId, { resolve, reject });
-  });
-  try {
-    worker.postMessage({
-      type: 'synthesize',
-      requestId,
-      payload: requestPayload,
-      audioRoot,
-    });
-  } catch (err) {
-    const pending = workerRequests.get(requestId);
-    if (pending) {
-      workerRequests.delete(requestId);
-      pending.reject(err);
-    }
-    return { ok: false, error: String(err && err.message ? err.message : err), request_id: requestId };
-  }
-  try {
-    const response = await resultPromise;
-    if (response && response.ok) {
-      return { ok: true, request_id: requestId, ...response.result };
-    }
-    if (response && response.canceled) {
-      return { ok: false, canceled: true, error: response.error || 'Synthesis canceled', request_id: requestId };
-    }
-    const message = response && response.error ? response.error : 'Synthesis failed';
-    return { ok: false, error: message, request_id: requestId };
-  } catch (err) {
-    return { ok: false, error: String(err && err.message ? err.message : err), request_id: requestId };
-  }
+  return runKokoroSynthesis(payload || {});
 });
 
 try { ipcMain.removeHandler('kokoro-cancel'); } catch (e) {}
-ipcMain.handle('kokoro-cancel', async (_event, rawRequestId) => {
-  try {
-    const requestId = (typeof rawRequestId === 'string' && rawRequestId.length > 0) ? rawRequestId : null;
-    if (!requestId) {
-      return { ok: false, error: 'Invalid request id' };
-    }
-    if (!workerRequests.has(requestId)) {
-      return { ok: false, error: 'No active synthesis for request id' };
-    }
-    if (!kokoroWorker) {
-      return { ok: false, error: 'No active worker' };
-    }
-    kokoroWorker.postMessage({ type: 'cancel', requestId });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err && err.message ? err.message : err) };
+ipcMain.handle('kokoro-cancel', async () => {
+  if (kokoroWorker && activeSynthesisJob) {
+    kokoroWorker.postMessage({ type: 'cancel' });
   }
 });
 
-// Utility: read an absolute file as base64 (for legacy saved PDFs, if needed)
 try { ipcMain.removeHandler('read-file-base64'); } catch (e) {}
 ipcMain.handle('read-file-base64', async (_event, absPath) => {
   try {

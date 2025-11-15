@@ -31,7 +31,6 @@ let optionsBackdrop = null;
 let speedValueLabel = null;
 let isGenerating = false;
 let cancelRequested = false;
-let activeSynthesisRequestId = null;
 let optionsDrawerOpen = false;
 let currentOptions = {
   voice: 'af_heart',
@@ -765,23 +764,14 @@ function navigateToInput() {
 }
 
 async function cancelActiveSynthesis() {
-  if (!isGenerating || !activeSynthesisRequestId) return;
+  if (!isGenerating) return;
   setCancelRequested(true);
   const status = document.getElementById('status');
   if (status) status.textContent = 'Canceling…';
   try {
-    const res = await window.api.cancelSynthesis(activeSynthesisRequestId);
-    if (!res || !res.ok) {
-      // If the backend already finished, let the normal completion flow update UI without spamming errors.
-      if (res && res.error === 'No active synthesis for request id') {
-        return;
-      }
-      console.warn('Cancel request failed:', res && res.error ? res.error : res);
-      setCancelRequested(false);
-      if (status) status.textContent = 'Cancel failed';
-    }
+    await window.api.cancelSynthesis();
   } catch (err) {
-    console.error('Cancel request encountered an error:', err);
+    console.error('Cancel request failed:', err);
     setCancelRequested(false);
     if (status) status.textContent = 'Cancel failed';
   }
@@ -814,9 +804,6 @@ async function startSynthesis() {
     raw_content_type: currentRawContentType,
     title: currentTitle
   };
-  const requestId = `synth-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  payload.request_id = requestId;
-  activeSynthesisRequestId = requestId;
 
   const synthInvocationStartedAt = nowMs();
   status.textContent = 'Synthesizing…';
@@ -830,14 +817,7 @@ async function startSynthesis() {
 
   try {
     const synthResult = await window.api.synthesize(payload);
-    if (synthResult && synthResult.canceled) {
-      status.textContent = 'Canceled';
-      return;
-    }
-    if (!synthResult || !synthResult.ok) {
-      throw new Error(synthResult && synthResult.error ? synthResult.error : 'Synthesis failed');
-    }
-    if (!synthResult.wav_rel_path) {
+    if (!synthResult || !synthResult.wav_rel_path) {
       throw new Error('Synthesis did not return an audio path');
     }
     const fileRes = await window.api.getSavedAudioFileUrl(synthResult.wav_rel_path);
@@ -871,14 +851,16 @@ async function startSynthesis() {
       }
     }
   } catch (err) {
-    console.error('Synthesis failed:', err);
-    status.textContent = `Error: ${err && err.message ? err.message : 'Synthesis failed'}`;
+    const message = err && err.message ? err.message : 'Synthesis failed';
+    if (err && err.name === 'AbortError') {
+      status.textContent = 'Canceled';
+    } else {
+      console.error('Synthesis failed:', err);
+      status.textContent = `Error: ${message}`;
+    }
   } finally {
     if (!progressHandled) {
       hideProgressUi();
-    }
-    if (activeSynthesisRequestId === requestId) {
-      activeSynthesisRequestId = null;
     }
     setGeneratingState(false);
   }
