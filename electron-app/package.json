@@ -2,7 +2,7 @@
   "name": "readl-electron",
   "version": "0.1.0",
   "description": "Electron app to paste text and play Kokoro TTS audio",
-  "main": "main.js",
+  "main": "main/main.js",
   "build": {
     "appId": "com.readl.app",
     "productName": "Readl",
@@ -12,8 +12,8 @@
     "extraResources": [],
     "files": [
       "index.html",
-      "main.js",
-      "preload.js",
+      "main/**/*",
+      "preload/**/*",
       "renderer.js",
       "kokoro-engine.js",
       "kokoro-worker.js",
@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "dmg-license": "^1.0.11",
-    "electron": "^31.0.0",
+    "electron": "^39.2.0",
     "electron-builder": "^26.0.12"
   },
   "dependencies": {

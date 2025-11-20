@@ -144,6 +144,9 @@ function createKokoroEngine() {
         return KokoroTTS.from_pretrained(DEFAULT_KOKORO_MODEL_ID, {
           dtype: DEFAULT_KOKORO_DTYPE,
           device,
+          session_options: {
+            enableCpuMemArena: false,
+          },
         });
       })()
         .then((tts) => {

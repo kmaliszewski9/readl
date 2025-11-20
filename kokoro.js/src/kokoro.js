@@ -6,7 +6,9 @@ import { getVoiceData, VOICES } from "./voices.js";
 const STYLE_DIM = 256;
 const SAMPLE_RATE = 24000;
 const MAGIC_DIVISOR = 80;
-const MAX_PHONEME_COUNT = 510;
+const MAX_PHONEME_COUNT = 500;
+const MAX_SEQUENCE_TOKEN_LENGTH = 500;
+const MIN_SPLIT_PHONEMES = 64;
 const WATERFALL_BREAKS = ['!.?…', ':;', ',—'];
 const WATERFALL_BUMPS = new Set([')', '”']);
 
@@ -125,6 +127,67 @@ const chunkEnglishTokens = (tokens, maxCount = MAX_PHONEME_COUNT) => {
   }
 
   return chunks;
+};
+
+const fallbackSplitChunk = (chunk) => {
+  if (!chunk?.tokens?.length) {
+    return [];
+  }
+  const mid = Math.max(1, Math.floor(chunk.tokens.length / 2));
+  const left = chunk.tokens.slice(0, mid);
+  const right = chunk.tokens.slice(mid);
+  return [left, right]
+    .filter((segment) => segment.length)
+    .map((segment) => ({
+      tokens: segment,
+      phonemes: tokensToPhonemeString(segment),
+      text: tokensToTextString(segment),
+    }));
+};
+
+const prepareChunksForInference = (chunks, tokenizer) => {
+  const ready = [];
+  const queue = [...chunks];
+  while (queue.length) {
+    const chunk = queue.shift();
+    if (!chunk || !chunk.phonemes) {
+      continue;
+    }
+    let chunkPhonemes = chunk.phonemes;
+    if (chunkPhonemes.length > MAX_PHONEME_COUNT) {
+      console.warn(`[kokoro] Unexpected chunk phoneme length ${chunkPhonemes.length} (> ${MAX_PHONEME_COUNT}). Truncating to ${MAX_PHONEME_COUNT}.`);
+      chunkPhonemes = chunkPhonemes.slice(0, MAX_PHONEME_COUNT);
+      chunk.phonemes = chunkPhonemes;
+    }
+    const encoded = tokenizer(chunkPhonemes, { truncation: false });
+    const sequenceLength = encoded.input_ids.dims.at(-1);
+    if (sequenceLength <= MAX_SEQUENCE_TOKEN_LENGTH) {
+      ready.push({ chunk, input_ids: encoded.input_ids });
+      continue;
+    }
+    const tokenCount = chunk.tokens?.length ?? 0;
+    if (tokenCount <= 1) {
+      console.warn(`[kokoro] Token sequence ${sequenceLength} exceeded ${MAX_SEQUENCE_TOKEN_LENGTH} but cannot be split further. Truncating.`);
+      const truncated = tokenizer(chunkPhonemes, { truncation: true, max_length: MAX_SEQUENCE_TOKEN_LENGTH });
+      ready.push({ chunk, input_ids: truncated.input_ids });
+      continue;
+    }
+    const reducedMax = Math.max(MIN_SPLIT_PHONEMES, Math.floor(chunkPhonemes.length / 2));
+    console.warn(`[kokoro] Chunk produced ${sequenceLength} tokens (> ${MAX_SEQUENCE_TOKEN_LENGTH}). Splitting with max phonemes ${reducedMax}.`);
+    const smallerChunks = chunkEnglishTokens(chunk.tokens, reducedMax);
+    if (smallerChunks.length === 0) {
+      const fallbacks = fallbackSplitChunk(chunk);
+      if (fallbacks.length === 0) {
+        const truncated = tokenizer(chunkPhonemes, { truncation: true, max_length: MAX_SEQUENCE_TOKEN_LENGTH });
+        ready.push({ chunk, input_ids: truncated.input_ids });
+      } else {
+        queue.unshift(...fallbacks);
+      }
+    } else {
+      queue.unshift(...smallerChunks);
+    }
+  }
+  return ready;
 };
 
 const concatAudioSegments = (audios) => {
@@ -251,10 +314,24 @@ export class KokoroTTS {
    * @param {"fp32"|"fp16"|"q8"|"q4"|"q4f16"} [options.dtype="fp32"] The data type to use.
    * @param {"wasm"|"webgpu"|"cpu"|null} [options.device=null] The device to run the model on.
    * @param {import("@huggingface/transformers").ProgressCallback} [options.progress_callback=null] A callback function that is called with progress information.
+   * @param {import("onnxruntime-common").InferenceSession.SessionOptions} [options.session_options] Optional ONNX Runtime session options to control execution behavior.
    * @returns {Promise<KokoroTTS>} The loaded model
    */
-  static async from_pretrained(model_id, { dtype = "fp32", device = null, progress_callback = null } = {}) {
-    const model = StyleTextToSpeech2Model.from_pretrained(model_id, { progress_callback, dtype, device });
+  static async from_pretrained(
+    model_id,
+    {
+      dtype = "fp32",
+      device = null,
+      progress_callback = null,
+      session_options = {},
+    } = {},
+  ) {
+    const model = StyleTextToSpeech2Model.from_pretrained(model_id, {
+      progress_callback,
+      dtype,
+      device,
+      session_options,
+    });
     const tokenizer = AutoTokenizer.from_pretrained(model_id, { progress_callback });
 
     const info = await Promise.all([model, tokenizer]);
@@ -305,18 +382,12 @@ export class KokoroTTS {
     let combinedPredDur = null;
     let offsetSeconds = 0;
 
-    for (const chunk of synthesisPlan) {
-      if (!chunk.phonemes) {
+    const preparedChunks = prepareChunksForInference(synthesisPlan, this.tokenizer);
+    for (const { chunk, input_ids } of preparedChunks) {
+      if (!chunk?.phonemes) {
         continue;
       }
       console.info(`[kokoro] Chunking text length=${chunk.text.length}, phonemes=${chunk.phonemes.length}, tokens=${chunk.tokens.length}`);
-      let chunkPhonemes = chunk.phonemes;
-      if (chunkPhonemes.length > MAX_PHONEME_COUNT) {
-        console.warn(`[kokoro] Unexpected chunk phoneme length ${chunkPhonemes.length} (> ${MAX_PHONEME_COUNT}). Truncating to ${MAX_PHONEME_COUNT}.`);
-        chunkPhonemes = chunkPhonemes.slice(0, MAX_PHONEME_COUNT);
-        chunk.phonemes = chunkPhonemes;
-      }
-      const { input_ids } = this.tokenizer(chunkPhonemes, { truncation: true });
       const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
       audioSegments.push(audio);
       if (pred_dur) {
@@ -394,17 +465,11 @@ export class KokoroTTS {
         ? chunks
         : [{ tokens: tokenCopies, phonemes, text: sentence.trim() }];
 
-      for (const chunk of synthesisPlan) {
-        if (!chunk.phonemes) {
+      const preparedChunks = prepareChunksForInference(synthesisPlan, this.tokenizer);
+      for (const { chunk, input_ids } of preparedChunks) {
+        if (!chunk?.phonemes) {
           continue;
         }
-        let chunkPhonemes = chunk.phonemes;
-        if (chunkPhonemes.length > MAX_PHONEME_COUNT) {
-          console.warn(`[kokoro] Unexpected chunk phoneme length ${chunkPhonemes.length} (> ${MAX_PHONEME_COUNT}). Truncating to ${MAX_PHONEME_COUNT}.`);
-          chunkPhonemes = chunkPhonemes.slice(0, MAX_PHONEME_COUNT);
-          chunk.phonemes = chunkPhonemes;
-        }
-        const { input_ids } = this.tokenizer(chunkPhonemes, { truncation: true });
         const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
         if (pred_dur) {
           this._join_timestamps(chunk.tokens, pred_dur);
@@ -434,7 +499,8 @@ export class KokoroTTS {
    */
   async _infer_with_durations(input_ids, { voice = "af_heart", speed = 1 } = {}) {
     // Select voice style based on number of input tokens
-    const num_tokens = Math.min(Math.max(input_ids.dims.at(-1) - 2, 0), 509);
+    const sequenceLength = input_ids.dims.at(-1);
+    const num_tokens = Math.min(Math.max(sequenceLength - 2, 0), 509);
 
     // Load voice style
     const data = await getVoiceData(voice);

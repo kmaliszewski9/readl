@@ -769,7 +769,7 @@ async function cancelActiveSynthesis() {
   const status = document.getElementById('status');
   if (status) status.textContent = 'Canceling…';
   try {
-    await window.api.cancelSynthesis();
+    await window.api.engine.cancel();
   } catch (err) {
     console.error('Cancel request failed:', err);
     setCancelRequested(false);
@@ -816,11 +816,11 @@ async function startSynthesis() {
   let generationDurationMs = null;
 
   try {
-    const synthResult = await window.api.synthesize(payload);
+    const synthResult = await window.api.engine.synthesize(payload);
     if (!synthResult || !synthResult.wav_rel_path) {
       throw new Error('Synthesis did not return an audio path');
     }
-    const fileRes = await window.api.getSavedAudioFileUrl(synthResult.wav_rel_path);
+    const fileRes = await window.api.filesystem.getSavedAudioFileUrl(synthResult.wav_rel_path);
     if (!fileRes || !fileRes.ok || !fileRes.url) {
       throw new Error('Could not resolve saved file URL');
     }
@@ -845,7 +845,7 @@ async function startSynthesis() {
     setActiveLibraryRow(synthResult.wav_rel_path || null);
     await refreshSavedAudios({ showSkeleton: false });
     if (synthResult.align_rel_path) {
-      const metaRes = await window.api.getSavedAudioAlignment(synthResult.align_rel_path);
+      const metaRes = await window.api.filesystem.getSavedAudioAlignment(synthResult.align_rel_path);
       if (metaRes && metaRes.ok && metaRes.metadata) {
         captureAlignmentMetadata(metaRes.metadata);
       }
@@ -1118,7 +1118,7 @@ async function handleOpenFile() {
   const status = document.getElementById('status');
   status.textContent = '';
   try {
-    const result = await window.api.openFile();
+    const result = await window.api.filesystem.openFile();
     if (!result || result.canceled) return;
     lastOpenedFilePath = result.filePath || null;
     resetAlignmentState();
@@ -1151,7 +1151,7 @@ async function loadUrlAndRender(urlInput) {
   if (!isLikelyUrl(url)) return;
   status.textContent = 'Loading URL…';
   try {
-    const res = await window.api.fetchUrl(url);
+    const res = await window.api.filesystem.fetchUrl(url);
     if (!res || !res.ok) {
       throw new Error(res && res.error ? res.error : 'Failed to load URL');
     }
@@ -1700,7 +1700,7 @@ function renderSavedAudiosTree(container, items) {
         metadataPromise = (async () => {
           try {
             const alignRel = String(file.relPath || '').replace(/\.wav$/i, '.align.ndjson');
-            const metaRes = await window.api.getSavedAudioAlignment(alignRel);
+            const metaRes = await window.api.filesystem.getSavedAudioAlignment(alignRel);
             if (metaRes && metaRes.ok && metaRes.metadata) {
               return applyMetadata(metaRes.metadata);
             }
@@ -1742,7 +1742,7 @@ function renderSavedAudiosTree(container, items) {
       const ok = confirm(`Delete ${file.name}?`);
       if (!ok) return;
       try {
-        const res = await window.api.deleteSavedAudio(file.relPath);
+        const res = await window.api.filesystem.deleteSavedAudio(file.relPath);
         if (res && res.ok) {
           if (activeLibraryRelPath && activeLibraryRelPath === file.relPath) {
             setActiveLibraryRow(null);
@@ -1771,7 +1771,7 @@ async function refreshSavedAudios({ showSkeleton = true } = {}) {
       renderSavedAudiosSkeleton(container);
     }
     savedAudiosLoading = true;
-    const res = await window.api.listSavedAudios();
+    const res = await window.api.filesystem.listSavedAudios();
     const items = Array.isArray(res && res.items) ? res.items : [];
     renderSavedAudiosTree(container, items);
   } catch (err) {
@@ -1815,7 +1815,7 @@ async function openSavedRecording(metadata, wavRelPath) {
       try {
         // Prefer to re-fetch via URL for URL-based sources
         if (kind === 'url' && srcUrl) {
-          const res = await window.api.fetchUrl(srcUrl);
+          const res = await window.api.filesystem.fetchUrl(srcUrl);
           if (res && res.ok && res.bodyBase64 && /application\/pdf/i.test(res.contentType || '')) {
             await renderPdfFromBytes(b64ToUint8Array(res.bodyBase64), srcUrl);
           } else {
@@ -1826,7 +1826,7 @@ async function openSavedRecording(metadata, wavRelPath) {
           }
         } else if (kind === 'file' && srcUrl && srcUrl.startsWith('file://')) {
           const absPath = srcUrl.replace(/^file:\/\//, '');
-          const rf = await window.api.readFileBase64(absPath);
+          const rf = await window.api.filesystem.readFileBase64(absPath);
           if (rf && rf.ok && rf.base64) {
             await renderPdfFromBytes(b64ToUint8Array(rf.base64), srcUrl);
           } else {
@@ -1884,7 +1884,7 @@ async function openSavedRecording(metadata, wavRelPath) {
     clearAudioSource();
     if (wavRelPath && audioElement) {
       try {
-        const fileRes = await window.api.getSavedAudioFileUrl(wavRelPath);
+        const fileRes = await window.api.filesystem.getSavedAudioFileUrl(wavRelPath);
         if (fileRes && fileRes.ok && fileRes.url) {
           audioElement.src = fileRes.url; // do not autoplay
         }

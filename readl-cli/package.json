@@ -1,0 +1,27 @@
+{
+  "name": "readl-cli",
+  "version": "0.1.0",
+  "description": "Headless CLI for Readl Kokoro TTS workflows",
+  "bin": {
+    "readl-cli": "./bin/readl-cli.js"
+  },
+  "scripts": {
+    "start": "node ./bin/readl-cli.js",
+    "synth": "node ./bin/readl-cli.js synth"
+  },
+  "keywords": [
+    "kokoro",
+    "tts",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "commander": "^12.1.0",
+    "dompurify": "^3.2.7",
+    "jsdom": "^24.1.0",
+    "pdfjs-dist": "^5.4.296",
+    "kokoro-js": "file:../kokoro.js"
+  }
+}
