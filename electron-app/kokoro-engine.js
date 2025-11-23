@@ -145,6 +145,7 @@ function createKokoroEngine() {
           dtype: DEFAULT_KOKORO_DTYPE,
           device,
           session_options: {
+            // TODO: node crashes for big inputs with this enabled
             enableCpuMemArena: false,
           },
         });

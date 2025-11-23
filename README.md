@@ -1,6 +1,6 @@
 # Readl — Kokoro TTS Desktop
 
-Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js Node runtime (ONNX on CPU). Everything runs inside the Electron main process—no separate Python service required.
+Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js Node runtime (ONNX on CPU).
 
 - Paste plain text or a URL (auto-fetches website and shows preview)
 - Pick voice, language, and speed
@@ -12,14 +12,6 @@ Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js 
 ## Architecture
 
 The Kokoro runtime lives in the sibling `kokoro.js` package. We build it with Rollup/TypeScript and install it into the Electron app via a local `file:` dependency. Inside Electron, a lightweight worker thread (`kokoro-worker.js`) hosts the TTS engine (`kokoro-engine.js`) so the main process stays responsive while synthesis runs and can abort work on demand. The renderer only talks to the main process over IPC, which then proxies requests to the worker and streams results back; this keeps audio buffers and ONNX execution off the UI thread.
-
-## Prerequisites
-
-- macOS (Apple Silicon supported)
-- Node.js 18+
-- Optional: set `READL_AUDIO_DIR="/absolute/path/to/audios"` before launching to control where synthesized WAVs and alignment sidecars are stored (defaults to `<repo>/audios`).
-
-The first synthesis downloads the Kokoro ONNX weights from Hugging Face (roughly 300 MB) and caches them under `.kokoro-cache` in the repo root.
 
 ## Setup
 
@@ -102,24 +94,6 @@ Segment line:
 
 - Token timestamps are in seconds and typically segment-relative; the app computes absolute times using `offset_seconds + start_ts`.
 - When timestamps are not available, `has_token_timestamps` is false; tokens may still be present without `start_ts`/`end_ts`.
-
-### Language codes (Kokoro)
-
-- `a`: English (US)
-- `b`: English (UK)
-- `e`: Spanish
-- `f`: French
-- `h`: Hindi
-- `i`: Italian
-- `j`: Japanese
-- `p`: Portuguese (BR)
-- `z`: Mandarin
-
-## Troubleshooting
-
-- First run can take a while while Kokoro weights download; watch the Electron console for progress.
-- If synthesis fails immediately, ensure the Kokoro.js dependencies are installed (`cd kokoro.js && npm install`) and that Hugging Face downloads are not blocked by a firewall.
-- Set `READL_AUDIO_DIR` to a writable path if the default `audios/` directory is not desirable.
 
 ## Reference
 
