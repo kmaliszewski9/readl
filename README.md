@@ -2,98 +2,31 @@
 
 Electron app that synthesizes speech locally using Kokoro-82M via the Kokoro.js Node runtime (ONNX on CPU).
 
+## Features
+
 - Paste plain text or a URL (auto-fetches website and shows preview)
 - Pick voice, language, and speed
 - Audio is saved to disk; play from disk and manage recordings
 - Open local HTML/TXT/PDF files
 - See a sanitized, formatted preview; text is auto-extracted for TTS. When input is HTML or a website URL, the app attempts to parse the page using a Reader Mode extractor (Mozilla Readability) to focus on the main article content. If Reader Mode fails, it falls back to sanitized full-page text.
-- When token-level alignment is available, the preview highlights each spoken word in sync with playback (requires a browser engine with the CSS Highlight API, e.g. Chromium 105+).
+- When token-level alignment is available, the preview highlights each spoken word in sync with playback
 
-## Architecture
+## Quick Start
 
-The Kokoro runtime lives in the sibling `kokoro.js` package. We build it with Rollup/TypeScript and install it into the Electron app via a local `file:` dependency. Inside Electron, a lightweight worker thread (`kokoro-worker.js`) hosts the TTS engine (`kokoro-engine.js`) so the main process stays responsive while synthesis runs and can abort work on demand. The renderer only talks to the main process over IPC, which then proxies requests to the worker and streams results back; this keeps audio buffers and ONNX execution off the UI thread.
-
-## Setup
-
-Install and build the local Kokoro.js package, then install the Electron app:
+See [Development Guide](docs/development.md) for full setup instructions.
 
 ```bash
-cd kokoro.js
-npm install
-npm run build
+# 1. Build Kokoro.js
+cd kokoro.js && npm install && npm run build
 
-cd ../electron-app
-npm install
+# 2. Run Electron App
+cd ../electron-app && npm install && npm start
 ```
 
-You only need to run the installs once (or whenever `package.json` changes).
+## Documentation
 
-## Run the Electron app
-
-In a separate terminal:
-
-```bash
-cd electron-app
-npm start
-```
-
-Usage:
-
-- Paste text or a URL. If you paste/type a URL (e.g. `https://example.com` or `example.com`), the app fetches the page, renders a sanitized preview, and extracts plain text automatically into the textarea for TTS.
-- Or click “Open File…” to select an `.html`/`.htm`, `.txt`, or `.pdf` file.
-- Choose a voice (e.g. `af_heart`), select language (e.g. `a` for US English), adjust speed, and press Play.
-
-Notes:
-
-- HTML is sanitized at render-time (JavaScript is not executed) using DOMPurify.
-- Website URLs are fetched by the app (no CORS prompts). HTML/plain text responses are supported; other content types fall back to HTML rendering. Bare domains are auto-prefixed with `https://`.
-  - For HTML pages, the app first tries Reader Mode (Readability) extraction to isolate the main article and uses that for both preview and TTS text.
-  - For PDF files/URLs, the app renders with PDF.js using a real text layer (selectable `<span>` text). The TTS text is derived from the same PDF.js `getTextContent()` output to minimize mismatches with the text layer.
-  - The existing highlighting pipeline is reused for PDFs: we rebuild the preview text-node index when the PDF text layer renders, and when view changes (zoom/rotation). Tokens are mapped to DOM Ranges and painted via the CSS Highlight API.
-  
-The Electron main process calls Kokoro.js directly, streams the generated PCM in memory, and writes a WAV plus `.align.ndjson` sidecar into the shared audio directory. When synthesis completes the renderer plays the saved file from disk and loads alignment metadata for highlighting.
-
-## Configuration
-
-Set any of these environment variables before `npm start` to customize the Kokoro runtime:
-
-- `READL_AUDIO_DIR`: Absolute output directory for WAV/NDJSON pairs (defaults to `<repo>/audios`).
-- `READL_KOKORO_MODEL_ID`: Hugging Face repo id loaded by `KokoroTTS.from_pretrained` (default `kmaliszewski/Kokoro-82M-v1.0-ONNX`).
-- `READL_KOKORO_DEVICE`: Device string passed to Kokoro.js (`cpu` by default; GPU backends depend on your Node build).
-- `READL_KOKORO_DTYPE`: Precision hint (`fp32`, `fp16`, `q8`, `q4`, `q4f16`; default `fp32`).
-- `READL_KOKORO_CACHE_DIR`: Download/cache directory for ONNX weights (default `<repo>/.kokoro-cache`).
-- `READL_TTS_MAX_CHARS`: Maximum characters per synthesis chunk before we auto-split (default `400`).
-- `READL_TTS_MAX_TOKENS`: Maximum phoneme tokens allowed per chunk (default `460`).
-- `READL_TTS_DEBUG`: Set to `1` to log chunking decisions and phoneme stats in the Electron console.
-
-## CLI scratchpad (`kokoro-toy.mjs`)
-
-`kokoro-toy.mjs` is a tiny Node script that uses the same `KokoroTTS` class as the Electron app, making it handy for smoke-testing new voices, dtypes, or cache paths without launching the UI. It uses the installed `kokoro-js` dependency, so remember to run `npm install` in `kokoro.js` first.
-
-```bash
-node kokoro-toy.mjs --text "Hello world." --voice af_heart --out ./audios/hello.wav --align ./audios/hello.align.ndjson
-```
-
-Use `--text-file`, STDIN piping, or `--text` for input, `--list-voices` to inspect available speakers, and `--model`, `--dtype`, `--device`, or `--cache` to mirror whatever you plan to load inside Electron. The script writes the same `.align.ndjson` structure as the desktop app, so you can diff timing/alignment changes offline.
-
-## Alignment sidecars (`.align.ndjson`)
-
-Each synthesis produces an NDJSON sidecar next to the WAV. The first line is a header and every subsequent line represents a segment:
-
-Header line:
-
-```json
-{"type":"header","version":1,"created_at":"2025-10-04T13:14:49","sample_rate":24000,"duration_seconds":3.21,"wav_rel_path":"2025-10-04/131449419_af_heart_a_hello-world.wav","voice":"af_heart","speed":1.0,"lang_code":"a","text":"Hello world","preview_html":"<p>Hello…</p>","source_kind":"url","source_url":"https://example.com","raw_content":"…","raw_content_type":"text/html","title":"Example","has_token_timestamps":true}
-```
-
-Segment line:
-
-```json
-{"type":"segment","text_index":0,"offset_seconds":0.0,"duration_seconds":1.23,"has_token_timestamps":true,"tokens":[{"index":0,"text":"Hello","start_ts":0.12,"end_ts":0.48},{"index":1,"text":"world","start_ts":0.62,"end_ts":1.18}]}
-```
-
-- Token timestamps are in seconds and typically segment-relative; the app computes absolute times using `offset_seconds + start_ts`.
-- When timestamps are not available, `has_token_timestamps` is false; tokens may still be present without `start_ts`/`end_ts`.
+- [Architecture & Technical Notes](docs/architecture.md) - Details on internal design, HTML sanitization, Reader Mode, and PDF handling.
+- [Development Guide](docs/development.md) - Setup, build, run, and usage instructions.
 
 ## Reference
 
