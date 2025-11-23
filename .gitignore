@@ -1,4 +1,10 @@
 audios
 .kokoro-cache
 __pycache__
-
+kokoro-toy.mjs
+kokoro.py/
+crash.txt
+.gitignore
+input.txt
+.gitignore
+.DS_Store
