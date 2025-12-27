@@ -231,8 +231,8 @@ function registerIpcHandlers({ kokoroService, logger }) {
     }
   });
 
-  registerHandler('kokoro-synthesize', (_event, payload) => {
-    return kokoroService.run(payload || {});
+  registerHandler('kokoro-synthesize', (event, payload) => {
+    return kokoroService.run(payload || {}, event.sender);
   });
 
   registerHandler('kokoro-cancel', async () => {

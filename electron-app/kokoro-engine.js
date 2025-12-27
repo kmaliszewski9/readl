@@ -162,7 +162,7 @@ function createKokoroEngine() {
     return kokoroLoadPromise;
   }
 
-  async function synthesizeWithKokoro(requestPayload, { abortSignal, audioRoot }) {
+  async function synthesizeWithKokoro(requestPayload, { abortSignal, audioRoot, onProgress }) {
     const synthStart = performance.now();
     throwIfAborted(abortSignal);
     const originalText = typeof requestPayload?.text === 'string' ? requestPayload.text : '';
@@ -187,9 +187,21 @@ function createKokoroEngine() {
 
     let synthResult;
     try {
-      synthResult = await tts.generate(text, { voice, speed });
+      const generateOptions = { voice, speed };
+      if (typeof onProgress === 'function') {
+        generateOptions.on_progress = onProgress;
+      }
+      if (abortSignal) {
+        generateOptions.abort_signal = abortSignal;
+      }
+      synthResult = await tts.generate(text, generateOptions);
       throwIfAborted(abortSignal);
     } catch (err) {
+      // Don't log AbortError as an error - it's expected during cancellation
+      if (err && err.name === 'AbortError') {
+        console.info('[kokoro] Synthesis canceled');
+        throw err;
+      }
       console.error('[kokoro] Synthesis failed', err);
       throw err;
     }

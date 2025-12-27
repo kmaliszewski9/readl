@@ -27,6 +27,22 @@ const phonemizer = {
 const engine = {
   synthesize: (request) => invoke('kokoro-synthesize', request),
   cancel: () => invoke('kokoro-cancel'),
+  /**
+   * Subscribe to synthesis progress updates.
+   * @param {(info: {done: number, total: number, pct: number}) => void} handler
+   * @returns {() => void} Unsubscribe function
+   */
+  onProgress: (handler) => {
+    const listener = (_event, info) => {
+      if (typeof handler === 'function') {
+        handler(info);
+      }
+    };
+    ipcRenderer.on('kokoro-progress', listener);
+    return () => {
+      ipcRenderer.off('kokoro-progress', listener);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('api', {

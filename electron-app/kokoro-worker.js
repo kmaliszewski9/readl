@@ -24,6 +24,9 @@ parentPort.on('message', async (msg) => {
       const result = await engine.synthesize(payload, {
         abortSignal: currentAbortController.signal,
         audioRoot,
+        onProgress: ({ done, total }) => {
+          parentPort.postMessage({ type: 'progress', done, total });
+        },
       });
       parentPort.postMessage({
         ok: true,

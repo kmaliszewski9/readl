@@ -285,9 +285,17 @@ class KokoroResult {
 }
 
 /**
+ * @typedef {Object} ProgressInfo
+ * @property {number} done Number of chunks completed
+ * @property {number} total Total number of chunks to process
+ */
+
+/**
  * @typedef {Object} GenerateOptions
  * @property {keyof typeof VOICES} [voice="af_heart"] The voice
  * @property {number} [speed=1] The speaking speed
+ * @property {(info: ProgressInfo) => void} [on_progress] Optional callback invoked after each inference chunk completes
+ * @property {AbortSignal} [abort_signal] Optional abort signal to cancel synthesis between chunks
  */
 
 /**
@@ -363,10 +371,27 @@ export class KokoroTTS {
    * @param {GenerateOptions} options Additional options
    * @returns {Promise<KokoroResult>} The generated result with audio, phonemes, and tokens
    */
-  async generate(text, { voice = "af_heart", speed = 1 } = {}) {
+  async generate(text, { voice = "af_heart", speed = 1, on_progress, abort_signal } = {}) {
+    // Helper to check abort signal and throw if aborted
+    const checkAborted = () => {
+      if (abort_signal && abort_signal.aborted) {
+        const reason = abort_signal.reason;
+        if (reason instanceof Error) {
+          throw reason;
+        }
+        const err = new Error(reason ? String(reason) : 'Synthesis aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+    };
+
+    checkAborted();
+
     const language = this._validate_voice(voice);
     const { phonemes, tokens } = await phonemizeDetailed(text, language);
     console.info(`[kokoro] Phonemized text length=${text.length}, phonemes=${phonemes.length}, tokens=${tokens.length}`);
+
+    checkAborted();
 
     const tokenCopies = tokens.map((token) => ({
       ...token,
@@ -383,12 +408,31 @@ export class KokoroTTS {
     let offsetSeconds = 0;
 
     const preparedChunks = prepareChunksForInference(synthesisPlan, this.tokenizer);
+    const total = preparedChunks.length;
+    let done = 0;
+
+    // Fire initial progress callback
+    if (typeof on_progress === 'function') {
+      try {
+        on_progress({ done: 0, total });
+      } catch (_) {
+        // Ignore callback errors
+      }
+    }
+
     for (const { chunk, input_ids } of preparedChunks) {
+      // Check for abort before each chunk
+      checkAborted();
+
       if (!chunk?.phonemes) {
         continue;
       }
       console.info(`[kokoro] Chunking text length=${chunk.text.length}, phonemes=${chunk.phonemes.length}, tokens=${chunk.tokens.length}`);
       const { audio, pred_dur } = await this._infer_with_durations(input_ids, { voice, speed });
+
+      // Check for abort after inference
+      checkAborted();
+
       audioSegments.push(audio);
       if (pred_dur) {
         this._join_timestamps(chunk.tokens, pred_dur);
@@ -397,6 +441,16 @@ export class KokoroTTS {
         offsetSeconds += chunkDuration;
         if (synthesisPlan.length === 1) {
           combinedPredDur = pred_dur;
+        }
+      }
+
+      // Fire progress callback after each chunk
+      done += 1;
+      if (typeof on_progress === 'function') {
+        try {
+          on_progress({ done, total });
+        } catch (_) {
+          // Ignore callback errors
         }
       }
     }

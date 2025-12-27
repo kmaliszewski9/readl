@@ -42,7 +42,7 @@ function createKokoroService({ logger }) {
     return kokoroWorker;
   }
 
-  function run(payload = {}) {
+  function run(payload = {}, webContents = null) {
     const worker = ensureKokoroWorker();
     if (activeSynthesisJob) {
       throw new Error('Synthesis already running');
@@ -52,12 +52,28 @@ function createKokoroService({ logger }) {
 
     return new Promise((resolve, reject) => {
       const messageHandler = (msg) => {
-        worker.off('message', messageHandler);
-        activeSynthesisJob = null;
         if (!msg || typeof msg !== 'object') {
+          worker.off('message', messageHandler);
+          activeSynthesisJob = null;
           reject(new Error('Invalid worker response'));
           return;
         }
+
+        // Handle progress messages without resolving/rejecting
+        if (msg.type === 'progress') {
+          if (webContents && !webContents.isDestroyed()) {
+            const done = typeof msg.done === 'number' ? msg.done : 0;
+            const total = typeof msg.total === 'number' ? msg.total : 0;
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            webContents.send('kokoro-progress', { done, total, pct });
+          }
+          return;
+        }
+
+        // Final result or error - clean up and resolve/reject
+        worker.off('message', messageHandler);
+        activeSynthesisJob = null;
+
         if (msg.ok) {
           resolve(msg.result);
           return;
@@ -71,7 +87,7 @@ function createKokoroService({ logger }) {
         reject(new Error(msg.error || 'Synthesis failed'));
       };
 
-      activeSynthesisJob = { worker, messageHandler, reject };
+      activeSynthesisJob = { worker, messageHandler, reject, webContents };
       worker.on('message', messageHandler);
 
       try {

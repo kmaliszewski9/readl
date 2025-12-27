@@ -811,9 +811,16 @@ async function startSynthesis() {
   clearAudioSource();
   setActiveLibraryRow(null);
   setGeneratingState(true);
-  showProgressUi(10);
+  showProgressUi(0);
   let progressHandled = false;
   let generationDurationMs = null;
+
+  // Subscribe to chunk progress updates
+  const unsubscribeProgress = window.api.engine.onProgress(({ pct }) => {
+    if (!isGenerating) return; // Guard against late/out-of-order updates
+    updateProgressUi(pct);
+    status.textContent = `Synthesizing… ${pct}%`;
+  });
 
   try {
     const synthResult = await window.api.engine.synthesize(payload);
@@ -852,13 +859,17 @@ async function startSynthesis() {
     }
   } catch (err) {
     const message = err && err.message ? err.message : 'Synthesis failed';
-    if (err && err.name === 'AbortError') {
+    // Check for cancellation - either by name or by message content (IPC wraps errors)
+    const isCanceled = (err && err.name === 'AbortError') ||
+      (message && (message.includes('AbortError') || message.toLowerCase().includes('canceled')));
+    if (isCanceled) {
       status.textContent = 'Canceled';
     } else {
       console.error('Synthesis failed:', err);
       status.textContent = `Error: ${message}`;
     }
   } finally {
+    unsubscribeProgress();
     if (!progressHandled) {
       hideProgressUi();
     }
