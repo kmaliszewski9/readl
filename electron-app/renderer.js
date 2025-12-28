@@ -23,6 +23,10 @@ let lastHighlightedTokenIndex = -1;
 let pendingRangeRebuildId = null;
 let timedTokenIndices = [];
 let generateBtn = null;
+let previewEditBtn = null;
+let previewShowBtn = null;
+let editPreviewEl = null;
+let previewEl = null;
 let optionsToggleBtn = null;
 let optionsCloseBtn = null;
 let optionsDoneBtn = null;
@@ -41,6 +45,18 @@ const TOKEN_HIGHLIGHT_EPSILON = 0.03;
 const RELATIVE_TIME_FUZZ = 0.05;
 const HIGHLIGHT_API_AVAILABLE = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight !== 'undefined';
 const OPTIONS_STORAGE_KEY = 'readl-options-v1';
+
+const tinyMceElemId = 'tinymceTarget';
+window.tinymce.init({
+  selector: `#${tinyMceElemId}`,
+  license_key: 'gpl',
+  width: "100%",
+  height: "100%",
+  resize: false,
+  menubar: false,
+  statusbar: false,
+  toolbar: false
+})
 
 function logAlignment(metadata, wavRelPath) {
   try {
@@ -746,6 +762,7 @@ function toggleOptionsDrawer() {
 }
 
 function handleGenerateClick() {
+  disableEditing();
   if (isGenerating) {
     cancelActiveSynthesis();
     return;
@@ -960,6 +977,7 @@ function renderSanitizedHtmlAndExtractText(html) {
   const textArea = document.getElementById('text');
   const safeHtml = window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
   previewEl.innerHTML = safeHtml;
+  setEditorContent(safeHtml);
   const textContent = stripHtmlToText(safeHtml).trim();
   textArea.value = textContent;
   currentPreviewHtml = safeHtml;
@@ -1006,9 +1024,11 @@ function renderReaderOrSanitized(html, baseUrl) {
 
   const result = tryReaderModeExtraction(html, baseUrl);
   if (result && result.html) {
-    previewEl.innerHTML = result.html;
+    const resultHtml = result.html;
+    previewEl.innerHTML = resultHtml;
+    setEditorContent(resultHtml);
     textArea.value = result.text || '';
-    currentPreviewHtml = result.html;
+    currentPreviewHtml = resultHtml;
     currentTitle = result.title || null;
     onPreviewDomUpdated();
     return;
@@ -1039,6 +1059,7 @@ async function renderPdfFromBytes(bytes, sourceUrl) {
 
   // Clear previous content and create the PDF viewer element
   previewEl.innerHTML = '';
+  setEditorContent('');
   const containerEl = document.createElement('div');
   containerEl.style.position = 'absolute';
   containerEl.style.inset = '0';
@@ -1081,7 +1102,7 @@ async function renderPdfFromBytes(bytes, sourceUrl) {
   const loadingTask = window.pdfjsLib.getDocument({ data: bytes });
   const pdfDocument = await loadingTask.promise;
   viewer.setDocument(pdfDocument);
-  try { viewer.currentScaleValue = 'page-width'; } catch (_) {}
+  try { viewer.currentScaleValue = 'page-width'; } catch (_) { }
 
   // Extract text for TTS from the same source as the text layer
   try {
@@ -1209,6 +1230,16 @@ async function loadUrlAndRender(urlInput) {
   }
 }
 
+function enableEditing() {
+  editPreviewEl.classList.remove("hidden");
+  previewEl.classList.add("hidden");
+}
+
+function disableEditing() {
+  editPreviewEl.classList.add("hidden");
+  previewEl.classList.remove("hidden");
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   hideProgressUi();
 
@@ -1216,6 +1247,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (audioElement) {
     audioElement.addEventListener('play', () => {
       startHighlightLoop();
+      disableEditing();
     });
     audioElement.addEventListener('pause', () => {
       stopHighlightLoop();
@@ -1236,6 +1268,8 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   generateBtn = document.getElementById('generateBtn');
+  previewEditBtn = document.getElementById('previewEditBtn');
+  previewShowBtn = document.getElementById('previewShowBtn');
   optionsToggleBtn = document.getElementById('optionsToggle');
   optionsCloseBtn = document.getElementById('optionsClose');
   optionsDoneBtn = document.getElementById('optionsDone');
@@ -1314,6 +1348,8 @@ window.addEventListener('DOMContentLoaded', () => {
   const modalUrlField = document.getElementById('modalUrlField');
   const urlCancelBtn = document.getElementById('urlCancelBtn');
   const urlLoadBtn = document.getElementById('urlLoadBtn');
+  editPreviewEl = document.getElementById('editPreview');
+  previewEl = document.getElementById('preview');
 
   if (previewBtn && inputText) {
     previewBtn.addEventListener('click', () => {
@@ -1337,6 +1373,26 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  previewEditBtn.addEventListener('click', enableEditing)
+
+  previewShowBtn.addEventListener('click', disableEditing)
+
+  getTinyMceEditor().on('input', function ({ currentTarget }) {
+    if (!currentTarget) return;
+
+    const editorHtml = currentTarget.innerHTML;
+    const editorText = currentTarget.innerText;
+
+    const previewEl = document.getElementById('preview');
+    const textArea = document.getElementById('text');
+
+    previewEl.innerHTML = editorHtml;
+    textArea.value = editorText || '';
+    currentPreviewHtml = editorHtml;
+
+    onPreviewDomUpdated();
+  })
 
   if (backBtn) {
     backBtn.addEventListener('click', () => {
@@ -1833,6 +1889,7 @@ async function openSavedRecording(metadata, wavRelPath) {
             // Fallback to text-only preview
             const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
             previewEl.innerHTML = safe;
+            setEditorContent(safe);
             onPreviewDomUpdated();
           }
         } else if (kind === 'file' && srcUrl && srcUrl.startsWith('file://')) {
@@ -1843,22 +1900,26 @@ async function openSavedRecording(metadata, wavRelPath) {
           } else {
             const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
             previewEl.innerHTML = safe;
+            setEditorContent(safe);
             onPreviewDomUpdated();
           }
         } else {
           const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
           previewEl.innerHTML = safe;
+          setEditorContent(safe);
           onPreviewDomUpdated();
         }
       } catch (_) {
         const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
         previewEl.innerHTML = safe;
+        setEditorContent(safe);
         onPreviewDomUpdated();
       }
       textArea.value = metadata.text || '';
     } else {
       const safe = window.DOMPurify.sanitize(metadata.preview_html || '', { USE_PROFILES: { html: true } });
       previewEl.innerHTML = safe;
+      setEditorContent(safe);
       textArea.value = metadata.text || '';
       onPreviewDomUpdated();
     }
@@ -1908,4 +1969,14 @@ async function openSavedRecording(metadata, wavRelPath) {
   } catch (e) {
     console.error('Failed to open saved recording:', e);
   }
+}
+
+function getTinyMceEditor() {
+  return tinymce.get(tinyMceElemId);
+}
+
+function setEditorContent(html) {
+  const editor = getTinyMceEditor();
+  if (!editor) return;
+  editor.setContent(html);
 }
